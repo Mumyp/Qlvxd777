@@ -113,7 +113,7 @@
   /* SL/TP */
   .ap-sltp { padding:7px 12px; }
   .ap-sltp-header { font-size:8px; color:var(--muted); letter-spacing:2px; margin-bottom:5px; display:flex; justify-content:space-between; }
-  .ap-sltp-grid { display:grid; grid-template-columns:1fr 1fr 1fr; gap:5px; }
+  .ap-sltp-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(0,1fr)); gap:5px; }
   .sltp-card { border-radius:4px; padding:6px 8px; }
   .sltp-card-label { font-size:8px; letter-spacing:1px; margin-bottom:2px; }
   .sltp-card-price { font-size:11px; font-weight:700; }
@@ -573,12 +573,17 @@ let radarTf = '5m', radarTimer = null;
 
 const HTF_MAP = { '5m':'1h', '15m':'4h', '1h':'4h', '4h':'1d', '1d':'1w' };
 
+// Унифицированные пороги силы сигнала
+const THRESHOLD_STRONG_BUY = 5;
+const THRESHOLD_BUY        = 2;
+
 // ═══ DEMO TRADING STATE ═══
 const DEMO_KEY = 'demoActiveTrade_v1';
 let activeTrade      = null;   // live object in memory
 let priceLines       = {};     // { entry, sl, tp0, tp1, tp2 … }
 let monitorInterval  = null;
 let lastKnownPrice   = null;
+let lastSignal       = null;   // последний рассчитанный сигнальный объект для текущего графика
 
 function loadActiveTrade() {
   try { return JSON.parse(localStorage.getItem(DEMO_KEY) || 'null'); }
@@ -907,6 +912,10 @@ function calcATR(candles, period = 14) {
 // ── SL/TP ──
 function distPct(a, b) { return Math.abs((a - b) / a * 100); }
 
+// ATR, рассчитанный при последнем вызове calcCompositeSignal (для getTradePlan)
+let _lastAtrForPlan = null;
+
+// Базовая логика расчёта SL/TP (как было раньше — ATR / проценты)
 function calcSLTP(score, sr, price, atr) {
   const isBull = score >= 1, isBear = score <= -1;
   if (!isBull && !isBear) return null;
@@ -977,11 +986,43 @@ function calcSLTP(score, sr, price, atr) {
   };
 }
 
+// Унифицированный торговый план для интерфейса и FAST-сделок
+// Возвращает:
+// { sl, tps[], slNote, slPct, rr[] }
+function getTradePlan(score, sr, price, entryPrice) {
+  const atr = _lastAtrForPlan;
+  const core = calcSLTP(score, sr, price, atr);
+  if (!core) return null;
+
+  const basePrice = entryPrice || price;
+
+  const tps = [];
+  const rr  = [];
+  if (core.tp1 != null) {
+    tps.push(core.tp1);
+    rr.push(core.rr1);
+  }
+  if (core.tp2 != null) {
+    tps.push(core.tp2);
+    rr.push(core.rr2);
+  }
+
+  const slPct = distPct(basePrice, core.sl);
+
+  return {
+    sl: core.sl,
+    tps,
+    slNote: core.slNote,
+    slPct,
+    rr,
+  };
+}
+
 // ═══════════════════════════════════════════════
 // ── COMPOSITE SIGNAL ENGINE v3 ──
 // Score: -7 to +7
 // ═══════════════════════════════════════════════
-function calcCompositeSignal(candles, htfData) {
+function getCompositeScore(candles, htfData) {
   if (!candles || candles.length < 35) return null;
   const closes  = candles.map(c => c.close);
   const price   = closes[closes.length - 1];
@@ -1113,11 +1154,11 @@ function calcCompositeSignal(candles, htfData) {
   let signal, signalClass;
   // Raw score determines STRONG labels, hysteresis determines if we show any signal at all
   if (hysteresisState === 'buy') {
-    if      (score >= 5) { signal = 'STRONG BUY'; signalClass = 'buy'; }
-    else                 { signal = 'BUY';         signalClass = 'buy'; }
+    if      (score >= THRESHOLD_STRONG_BUY) { signal = 'STRONG BUY'; signalClass = 'buy'; }
+    else                                    { signal = 'BUY';         signalClass = 'buy'; }
   } else if (hysteresisState === 'sell') {
-    if      (score <= -5){ signal = 'STRONG SELL'; signalClass = 'sell'; }
-    else                 { signal = 'SELL';         signalClass = 'sell'; }
+    if      (score <= -THRESHOLD_STRONG_BUY){ signal = 'STRONG SELL'; signalClass = 'sell'; }
+    else                                    { signal = 'SELL';         signalClass = 'sell'; }
   } else {
     // Neutral — but show a hint if score is trending
     if      (score >= 1) { signal = 'WAIT BUY';   signalClass = 'neutral'; }
@@ -1125,8 +1166,16 @@ function calcCompositeSignal(candles, htfData) {
     else                 { signal = 'НЕЙТРАЛЬНО';  signalClass = 'neutral'; }
   }
 
-  const sltp = calcSLTP(score, sr, price, atr);
+  // Сохраняем ATR для getTradePlan и строим единый торговый план
+  _lastAtrForPlan = atr;
+  const sltp = getTradePlan(score, sr, price, price);
+
   return { score, SCOREMAX, signal, signalClass, rsi, macd, ema, atr, sr, vol, patterns, factors, sltp, htfScore, htfData, htfTrend, htfFilterActive, htfFilterNote };
+}
+
+// Обратная совместимость: старое имя функции
+function calcCompositeSignal(candles, htfData) {
+  return getCompositeScore(candles, htfData);
 }
 
 // ═══════════════════════════════════════════════
@@ -1199,39 +1248,52 @@ function renderAnalysisPanel(sig, candles) {
     </div>`;
   }).join('');
 
-  // SL/TP
+  // SL/TP — динамический рендер по массиву ТП
   let sltpHTML = '';
   const st = sig.sltp;
-  if (st) {
-    const dir = st.isBull ? 'LONG 📈' : 'SHORT 📉';
-    const dirC = st.isBull ? 'var(--green)' : 'var(--red)';
-    const rrC1 = parseFloat(st.rr1)>=2?'var(--green)':parseFloat(st.rr1)>=1?'var(--yellow)':'var(--red)';
-    const rrC2 = parseFloat(st.rr2)>=2?'var(--green)':parseFloat(st.rr2)>=1?'var(--yellow)':'var(--red)';
+  if (st && Array.isArray(st.tps) && st.tps.length > 0) {
+    const basePrice = price;
+    const firstTp   = st.tps[0];
+    const isBull    = firstTp > basePrice;
+    const dir       = isBull ? 'LONG 📈' : 'SHORT 📉';
+    const dirC      = isBull ? 'var(--green)' : 'var(--red)';
+
+    const tpCards = st.tps.map((tp, idx) => {
+      const tpPct = distPct(basePrice, tp).toFixed(1);
+      const rrVal = st.rr && st.rr[idx] != null ? st.rr[idx] : '';
+      const rrNum = parseFloat(rrVal);
+      const rrColor = !isNaN(rrNum)
+        ? (rrNum >= 2 ? 'var(--green)' : rrNum >= 1 ? 'var(--yellow)' : 'var(--red)')
+        : 'var(--muted)';
+
+      const label       = `ТЕЙК-ПРОФИТ ${idx + 1}`;
+      const cardBg      = idx === 0 ? 'rgba(14,203,129,.07)' : 'rgba(108,127,255,.07)';
+      const cardBorder  = idx === 0 ? 'rgba(14,203,129,.25)' : 'rgba(108,127,255,.25)';
+      const priceColor  = idx === 0 ? 'var(--green)' : 'var(--accent)';
+
+      return `
+        <div class="sltp-card" style="background:${cardBg};border:1px solid ${cardBorder};">
+          <div class="sltp-card-label" style="color:${priceColor};">${label}</div>
+          <div class="sltp-card-price" style="color:${priceColor};">${fmt(tp)}</div>
+          <div class="sltp-card-pct" style="color:var(--muted);">+${tpPct}%</div>
+          <div class="sltp-card-rr" style="color:${rrColor};">${rrVal ? `RR ${rrVal}:1` : ''}</div>
+        </div>`;
+    }).join('');
+
     sltpHTML = `
     <div class="ap-sltp">
       <div class="ap-sltp-header">
         <span>ТОРГОВЫЙ ПЛАН · <span style="color:${dirC};font-weight:700;">${dir}</span></span>
         <span>вход ~${fmt(price)}</span>
       </div>
-      <div class="ap-sltp-grid">
+      <div class="ap-sltp-grid" style="grid-template-columns:repeat(${1 + st.tps.length}, 1fr);">
         <div class="sltp-card" style="background:rgba(246,70,93,.07);border:1px solid rgba(246,70,93,.25);">
           <div class="sltp-card-label" style="color:var(--red);">СТОП-ЛОСС</div>
           <div class="sltp-card-price" style="color:var(--red);">${fmt(st.sl)}</div>
           <div class="sltp-card-pct" style="color:var(--muted);">−${st.slPct.toFixed(1)}%</div>
           <div class="sltp-card-rr" style="color:#444;line-height:1.4;">${st.slNote}</div>
         </div>
-        <div class="sltp-card" style="background:rgba(14,203,129,.07);border:1px solid rgba(14,203,129,.25);">
-          <div class="sltp-card-label" style="color:var(--green);">ТЕЙК-ПРОФИТ 1</div>
-          <div class="sltp-card-price" style="color:var(--green);">${fmt(st.tp1)}</div>
-          <div class="sltp-card-pct" style="color:var(--muted);">+${st.tp1Pct.toFixed(1)}%</div>
-          <div class="sltp-card-rr" style="color:${rrC1};">RR ${st.rr1}:1</div>
-        </div>
-        <div class="sltp-card" style="background:rgba(108,127,255,.07);border:1px solid rgba(108,127,255,.25);">
-          <div class="sltp-card-label" style="color:var(--accent);">ТЕЙК-ПРОФИТ 2</div>
-          <div class="sltp-card-price" style="color:var(--accent);">${fmt(st.tp2)}</div>
-          <div class="sltp-card-pct" style="color:var(--muted);">+${st.tp2Pct.toFixed(1)}%</div>
-          <div class="sltp-card-rr" style="color:${rrC2};">RR ${st.rr2}:1</div>
-        </div>
+        ${tpCards}
       </div>
       <div class="ap-disclaimer">⚠ Только информация. Управляйте рисками самостоятельно.</div>
     </div>`;
@@ -1473,7 +1535,8 @@ async function loadChart() {
     if (activeTrade) updateActiveTradePnL(activeTrade, last.close);
     if (htfData) htfStatus.innerHTML = `<span style="color:var(--muted);">HTF ${htfData.tf} ✓</span>`;
 
-    const sig = calcCompositeSignal(candles, htfData);
+    const sig = getCompositeScore(candles, htfData);
+    lastSignal = sig;
     renderAnalysisPanel(sig, candles);
     overlay.classList.add('hidden');
 
@@ -1504,7 +1567,7 @@ async function loadRadar() {
         open:parseFloat(k[1]), high:parseFloat(k[2]),
         low: parseFloat(k[3]), close:parseFloat(k[4]), volume:parseFloat(k[5])
       }));
-      const sig = calcCompositeSignal(candles, null);
+      const sig = getCompositeScore(candles, null);
       results.push({ sym, last: candles[candles.length-1].close, sig });
     } catch { results.push({ sym, last: null, sig: null }); }
     await new Promise(r => setTimeout(r, 150));
@@ -1520,10 +1583,10 @@ async function loadRadar() {
 
     if (sig) {
       const s = sig.score;
-      if      (s >= 5) { badgeClass='buy';  badgeText='⚡BUY'; }
-      else if (s >= 2) { badgeClass='buy';  badgeText='BUY'; }
-      else if (s <= -5){ badgeClass='sell'; badgeText='⚡SELL'; }
-      else if (s <= -2){ badgeClass='sell'; badgeText='SELL'; }
+      if      (s >= THRESHOLD_STRONG_BUY)  { badgeClass='buy';  badgeText='⚡BUY'; }
+      else if (s >= THRESHOLD_BUY)         { badgeClass='buy';  badgeText='BUY'; }
+      else if (s <= -THRESHOLD_STRONG_BUY) { badgeClass='sell'; badgeText='⚡SELL'; }
+      else if (s <= -THRESHOLD_BUY)        { badgeClass='sell'; badgeText='SELL'; }
       else if (sig.rsi >= 30 && sig.rsi < 40) { badgeClass='watch'; badgeText='WATCH'; }
 
       rsiStr  = sig.rsi !== null ? sig.rsi.toFixed(1) : '—';
@@ -1786,9 +1849,23 @@ function openFastTrade(side) {
     return;
   }
 
+  // Нужен актуальный торговый план из анализа под графиком
+  if (!lastSignal || !lastSignal.sltp || !Array.isArray(lastSignal.sltp.tps) || lastSignal.sltp.tps.length === 0) {
+    showToast('⚠️ Нет актуального торгового плана для этой пары. Дождитесь сигнала и расчёта SL/TP.', 'loss');
+    return;
+  }
+
   const symbol     = document.getElementById('sym-select').value;
   const entryPrice = parseFloat(document.getElementById('c-entry').value) || lastKnownPrice;
-  const stopLoss   = parseFloat(document.getElementById('c-stop').value);
+
+  const plan = lastSignal.sltp;
+  const stopLoss = plan.sl;
+
+  // Синхронизируем поле стопа с планом, чтобы калькулятор и логика использовали один SL
+  if (stopLoss) {
+    const dec = priceDecimals(stopLoss);
+    document.getElementById('c-stop').value = stopLoss.toFixed(dec);
+  }
 
   // ── positionSize: compute from calc inputs, NOT from display text ──
   // Prefer: deposit × riskPct / stopDistance% (same formula as calcRisk)
@@ -1817,11 +1894,8 @@ function openFastTrade(side) {
     return;
   }
 
-  // Auto-generate TPs from SL distance
-  const slDist = Math.abs(entryPrice - stopLoss);
-  const takeProfits = side === 'LONG'
-    ? [ entryPrice + slDist * 1.5, entryPrice + slDist * 2.5, entryPrice + slDist * 4.0 ]
-    : [ entryPrice - slDist * 1.5, entryPrice - slDist * 2.5, entryPrice - slDist * 4.0 ];
+  // Берём ТП напрямую из торгового плана сигнала
+  const takeProfits = plan.tps.slice();
 
   activeTrade = {
     id:           Date.now(),
