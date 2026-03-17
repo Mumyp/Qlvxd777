@@ -1,0 +1,2979 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Crypto Assistant Pro</title>
+<script>
+(function() {
+  var cdns = [
+    'https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js',
+    'https://cdn.jsdelivr.net/npm/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js',
+    'https://cdnjs.cloudflare.com/ajax/libs/lightweight-charts/4.1.3/lightweight-charts.standalone.production.js'
+  ];
+  var idx = 0;
+  function tryLoad() {
+    if (idx >= cdns.length) { window._lwcFailed = true; return; }
+    var s = document.createElement('script');
+    s.src = cdns[idx++];
+    s.onload = function() { window._lwcLoaded = true; };
+    s.onerror = function() { document.head.removeChild(s); tryLoad(); };
+    document.head.appendChild(s);
+  }
+  tryLoad();
+})();
+</script>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&display=swap');
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg: #0b0e11; --panel: #1e2329; --panel2: #161a1f; --border: #2b3139;
+    --green: #0ecb81; --red: #f6465d; --yellow: #f0b90b; --orange: #f37b24;
+    --accent: #6c7fff; --accent2: #a78bfa; --text: #eaecef; --muted: #848e9c;
+    --font: 'JetBrains Mono', 'Courier New', monospace;
+  }
+  body { background:var(--bg); color:var(--text); font-family:var(--font); font-size:13px; height:100vh; overflow:hidden; display:flex; flex-direction:column; }
+
+  /* HEADER */
+  header { background:var(--panel2); border-bottom:1px solid var(--border); padding:8px 20px; display:flex; align-items:center; gap:16px; flex-shrink:0; }
+  .logo { display:flex; align-items:center; gap:10px; }
+  .logo-icon { width:30px; height:30px; background:linear-gradient(135deg,var(--accent),var(--accent2)); border-radius:7px; display:flex; align-items:center; justify-content:center; font-size:15px; box-shadow:0 0 16px rgba(108,127,255,0.4); }
+  .logo-text { font-size:14px; font-weight:700; letter-spacing:1px; background:linear-gradient(90deg,var(--accent),var(--accent2)); -webkit-background-clip:text; -webkit-text-fill-color:transparent; }
+  .header-sub { font-size:9px; color:var(--muted); letter-spacing:2px; }
+  .live-indicator { display:flex; align-items:center; gap:6px; font-size:10px; color:var(--muted); letter-spacing:1px; }
+  .live-dot { width:7px; height:7px; border-radius:50%; background:var(--green); animation:pulse 2s infinite; }
+  @keyframes pulse { 0%,100%{opacity:1;box-shadow:0 0 0 0 rgba(14,203,129,0.4)} 50%{opacity:.7;box-shadow:0 0 0 5px rgba(14,203,129,0)} }
+
+  /* EMA LEGEND */
+  .ema-legend { display:flex; align-items:center; gap:10px; margin-left:12px; }
+  .ema-tag { display:flex; align-items:center; gap:4px; font-size:9px; letter-spacing:1px; }
+  .ema-dot { width:10px; height:2px; border-radius:1px; }
+
+  /* LAYOUT */
+  .main { display:grid; grid-template-columns:1fr 30%; gap:1px; flex:1; overflow:hidden; background:var(--border); }
+  .left-panel { background:var(--bg); display:flex; flex-direction:column; overflow:hidden; }
+  .right-panel { background:var(--bg); display:flex; flex-direction:column; gap:1px; overflow:hidden; }
+
+  /* CONTROLS */
+  .controls-bar { background:var(--panel); border-bottom:1px solid var(--border); padding:8px 16px; display:flex; align-items:center; gap:8px; flex-shrink:0; }
+  .ctrl-group { display:flex; align-items:center; gap:5px; }
+  .ctrl-label { font-size:10px; color:var(--muted); letter-spacing:1px; text-transform:uppercase; }
+  select { background:var(--panel2); border:1px solid var(--border); color:var(--text); font-family:var(--font); font-size:12px; padding:5px 9px; border-radius:5px; cursor:pointer; outline:none; transition:border-color .2s; }
+  select:hover,select:focus { border-color:var(--accent); }
+  .btn { background:var(--panel2); border:1px solid var(--border); color:var(--text); font-family:var(--font); font-size:11px; padding:5px 12px; border-radius:5px; cursor:pointer; letter-spacing:1px; transition:all .2s; display:flex; align-items:center; gap:5px; }
+  .btn:hover { border-color:var(--accent); color:var(--accent); }
+  .btn.primary { background:var(--accent); border-color:var(--accent); color:#fff; font-weight:600; }
+  .btn.primary:hover { background:var(--accent2); border-color:var(--accent2); }
+  .up { color:var(--green); } .dn { color:var(--red); }
+
+  /* CHART */
+  .chart-wrap { flex:1; position:relative; overflow:hidden; min-height:0; }
+  #chart-container { width:100%; height:100%; }
+  .chart-overlay { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; background:rgba(11,14,17,.85); backdrop-filter:blur(4px); z-index:10; flex-direction:column; gap:14px; }
+  .chart-overlay.hidden { display:none; }
+  .spinner { width:34px; height:34px; border:3px solid var(--border); border-top-color:var(--accent); border-radius:50%; animation:spin .8s linear infinite; }
+  @keyframes spin { to{transform:rotate(360deg)} }
+  .overlay-text { color:var(--muted); font-size:11px; letter-spacing:1px; }
+  .error-text { color:var(--red); font-size:11px; text-align:center; padding:0 20px; line-height:1.6; }
+
+  /* ANALYSIS PANEL */
+  .analysis-panel { background:var(--panel); border-top:1px solid var(--border); flex-shrink:0; overflow-y:auto; max-height:280px; }
+  .analysis-panel::-webkit-scrollbar { width:3px; }
+  .analysis-panel::-webkit-scrollbar-thumb { background:var(--border); }
+
+  .ap-top { display:flex; align-items:stretch; border-bottom:1px solid var(--border); }
+  .ap-signal-box { flex:0 0 190px; padding:8px 14px; display:flex; flex-direction:column; justify-content:center; gap:3px; border-right:1px solid var(--border); }
+  .ap-signal-label { font-size:9px; color:var(--muted); letter-spacing:2px; }
+  .ap-signal-main { font-size:13px; font-weight:700; letter-spacing:1px; display:flex; align-items:center; gap:7px; }
+  .ap-signal-dot { width:8px; height:8px; border-radius:50%; flex-shrink:0; }
+  .ap-signal-sub { font-size:9px; color:var(--muted); }
+  .ap-htf-box { flex:0 0 140px; padding:8px 12px; display:flex; flex-direction:column; justify-content:center; gap:3px; border-right:1px solid var(--border); }
+  .ap-score-wrap { flex:1; padding:8px 12px; display:flex; flex-direction:column; justify-content:center; gap:4px; }
+  .ap-score-label { font-size:9px; color:var(--muted); letter-spacing:1px; }
+  .ap-score-bar { height:5px; background:var(--border); border-radius:3px; overflow:hidden; }
+  .ap-score-fill { height:100%; border-radius:3px; transition:width .6s,background .4s; }
+
+  .ap-metrics { display:grid; grid-template-columns:repeat(7,1fr); gap:0; border-bottom:1px solid var(--border); }
+  .ap-metric { padding:6px 10px; border-right:1px solid var(--border); display:flex; flex-direction:column; gap:2px; }
+  .ap-metric:last-child { border-right:none; }
+  .ap-metric-label { font-size:8px; color:var(--muted); letter-spacing:1px; text-transform:uppercase; }
+  .ap-metric-val { font-size:12px; font-weight:600; }
+  .ap-metric-sub { font-size:8px; color:var(--muted); }
+
+  .ap-factors { padding:5px 12px; border-bottom:1px solid var(--border); }
+  .ap-factor-row { display:flex; justify-content:space-between; align-items:center; padding:2px 0; }
+  .ap-factor-tag { font-size:8px; color:var(--muted); letter-spacing:1px; min-width:36px; }
+  .ap-factor-text { font-size:9px; flex:1; padding:0 8px; }
+  .ap-factor-pts { font-size:9px; font-weight:700; min-width:20px; text-align:right; }
+
+  .ap-patterns { padding:5px 12px; border-bottom:1px solid var(--border); display:flex; gap:6px; flex-wrap:wrap; align-items:center; }
+  .ap-pat-label { font-size:8px; color:var(--muted); letter-spacing:1px; margin-right:2px; }
+  .ap-pattern-badge { padding:2px 7px; border-radius:3px; font-size:9px; font-weight:600; letter-spacing:1px; }
+
+  /* SL/TP */
+  .ap-sltp { padding:7px 12px; }
+  .ap-sltp-header { font-size:8px; color:var(--muted); letter-spacing:2px; margin-bottom:5px; display:flex; justify-content:space-between; }
+  .ap-sltp-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(0,1fr)); gap:5px; }
+  .sltp-card { border-radius:4px; padding:6px 8px; }
+  .sltp-card-label { font-size:8px; letter-spacing:1px; margin-bottom:2px; }
+  .sltp-card-price { font-size:11px; font-weight:700; }
+  .sltp-card-pct { font-size:9px; margin-top:1px; }
+  .sltp-card-rr { font-size:8px; margin-top:1px; }
+  .ap-disclaimer { font-size:8px; color:#3a3f47; margin-top:4px; font-style:italic; }
+
+  /* RIGHT BLOCKS */
+  .block { background:var(--panel); flex:1; display:flex; flex-direction:column; overflow:hidden; min-height:0; }
+  .block-header { background:var(--panel2); border-bottom:1px solid var(--border); padding:8px 12px; display:flex; align-items:center; gap:7px; flex-shrink:0; }
+  .block-title { font-size:10px; font-weight:600; letter-spacing:2px; text-transform:uppercase; color:var(--muted); }
+  .block-icon { font-size:13px; }
+
+  /* RADAR */
+  .radar-tabs { padding:6px 10px; display:flex; gap:5px; border-bottom:1px solid var(--border); flex-shrink:0; }
+  .tab-btn { flex:1; background:transparent; border:1px solid var(--border); color:var(--muted); font-family:var(--font); font-size:9px; padding:4px 6px; border-radius:4px; cursor:pointer; letter-spacing:1px; transition:all .2s; }
+  .tab-btn.active { background:rgba(108,127,255,.15); border-color:var(--accent); color:var(--accent); }
+  .radar-body { flex:1; overflow-y:auto; min-height:0; }
+  .radar-body::-webkit-scrollbar { width:3px; }
+  .radar-body::-webkit-scrollbar-thumb { background:var(--border); }
+  .radar-table { width:100%; border-collapse:collapse; }
+  .radar-table th { position:sticky; top:0; background:var(--panel2); font-size:8px; color:var(--muted); letter-spacing:1px; text-transform:uppercase; padding:6px 10px; text-align:left; border-bottom:1px solid var(--border); font-weight:500; }
+  .radar-table td { padding:7px 10px; border-bottom:1px solid rgba(43,49,57,.5); font-size:11px; }
+  .radar-table tr:hover td { background:rgba(255,255,255,.02); }
+  .coin-name { font-weight:600; font-size:12px; }
+  .coin-sub { font-size:9px; color:var(--muted); }
+  .badge { padding:2px 6px; border-radius:3px; font-size:9px; font-weight:700; letter-spacing:1px; }
+  .badge.buy { background:rgba(14,203,129,.15); color:var(--green); border:1px solid rgba(14,203,129,.3); }
+  .badge.sell { background:rgba(246,70,93,.15); color:var(--red); border:1px solid rgba(246,70,93,.3); }
+  .badge.watch { background:rgba(240,185,11,.12); color:var(--yellow); border:1px solid rgba(240,185,11,.3); }
+  .badge.neutral { background:rgba(132,142,156,.1); color:var(--muted); border:1px solid var(--border); }
+  .radar-footer { padding:5px 10px; border-top:1px solid var(--border); font-size:8px; color:var(--muted); letter-spacing:1px; display:flex; align-items:center; gap:5px; flex-shrink:0; }
+  .update-dot { width:5px; height:5px; border-radius:50%; background:var(--green); }
+  @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }
+  .update-dot.loading { background:var(--yellow); animation:blink 1s infinite; }
+
+  /* CALCULATOR */
+  .calc-body { flex:1; overflow-y:auto; padding:12px; min-height:0; display:flex; flex-direction:column; gap:8px; }
+  .calc-body::-webkit-scrollbar { width:3px; }
+  .calc-body::-webkit-scrollbar-thumb { background:var(--border); }
+  .field-group { display:flex; flex-direction:column; gap:4px; }
+  .field-label { font-size:9px; color:var(--muted); letter-spacing:1px; }
+  .field-row { display:grid; grid-template-columns:1fr 1fr; gap:7px; }
+  input[type="number"] { background:var(--panel2); border:1px solid var(--border); color:var(--text); font-family:var(--font); font-size:12px; padding:7px 9px; border-radius:5px; width:100%; outline:none; transition:border-color .2s; -moz-appearance:textfield; }
+  input[type="number"]::-webkit-inner-spin-button,input[type="number"]::-webkit-outer-spin-button { -webkit-appearance:none; }
+  input[type="number"]:focus { border-color:var(--accent); }
+  input[type="number"]::placeholder { color:var(--border); }
+  .calc-result { background:var(--panel2); border:1px solid var(--border); border-radius:7px; padding:10px; display:flex; flex-direction:column; gap:7px; }
+  .result-row { display:flex; justify-content:space-between; align-items:center; }
+  .result-label { font-size:9px; color:var(--muted); letter-spacing:1px; }
+  .result-value { font-size:14px; font-weight:700; color:var(--accent); }
+  .result-value.big { font-size:18px; background:linear-gradient(90deg,var(--accent),var(--accent2)); -webkit-background-clip:text; -webkit-text-fill-color:transparent; }
+  .result-divider { height:1px; background:var(--border); }
+  .risk-meter { height:3px; background:var(--border); border-radius:2px; overflow:hidden; margin-top:3px; }
+  .risk-fill { height:100%; border-radius:2px; transition:width .4s,background .4s; }
+  .calc-error { color:var(--red); font-size:10px; text-align:center; }
+  ::-webkit-scrollbar { width:4px; height:4px; }
+  ::-webkit-scrollbar-track { background:transparent; }
+  ::-webkit-scrollbar-thumb { background:var(--border); border-radius:3px; }
+
+  /* ACTIVE TRADE WIDGET */
+  #active-trade-panel { display:none; }
+  #active-trade-panel.active { display:flex !important; }
+  #at-pnl-usd.profit { color:var(--green); text-shadow:0 0 20px rgba(14,203,129,0.4); }
+  #at-pnl-usd.loss   { color:var(--red);   text-shadow:0 0 20px rgba(246,70,93,0.4); }
+  #at-pnl-pct.profit { color:var(--green); }
+  #at-pnl-pct.loss   { color:var(--red); }
+
+  /* TOAST NOTIFICATION */
+  .toast {
+    position:fixed; bottom:24px; left:50%; transform:translateX(-50%) translateY(80px);
+    background:var(--panel); border:1px solid var(--border); border-radius:10px;
+    padding:14px 22px; font-family:var(--font); font-size:12px; color:var(--text);
+    box-shadow:0 8px 32px rgba(0,0,0,0.5); z-index:99999;
+    transition:transform .4s cubic-bezier(.34,1.56,.64,1), opacity .3s;
+    opacity:0; max-width:420px; text-align:center; line-height:1.6;
+  }
+  .toast.show { transform:translateX(-50%) translateY(0); opacity:1; }
+  .toast.win  { border-color:var(--green); }
+  .toast.loss { border-color:var(--red); }
+
+  /* JOURNAL MODAL */
+  #journal-modal { animation: modalFadeIn .2s ease; }
+  @keyframes modalFadeIn { from { opacity:0; } to { opacity:1; } }
+  #journal-inner { animation: modalSlideIn .25s ease; }
+  @keyframes modalSlideIn { from { transform:translateY(-20px); opacity:0; } to { transform:translateY(0); opacity:1; } }
+  #journal-modal input[type="number"],
+  #journal-modal input[type="date"],
+  #journal-modal textarea,
+  #journal-modal select { transition: border-color .2s; }
+  #journal-modal input[type="number"]:focus,
+  #journal-modal input[type="date"]:focus,
+  #journal-modal textarea:focus,
+  #journal-modal select:focus { border-color: var(--accent) !important; }
+  .j-status-badge { padding:2px 7px; border-radius:3px; font-size:9px; font-weight:700; letter-spacing:1px; cursor:pointer; border:1px solid; transition:all .2s; }
+  .j-status-open   { background:rgba(240,185,11,.12); color:var(--yellow); border-color:rgba(240,185,11,.3); }
+  .j-status-win    { background:rgba(14,203,129,.12); color:var(--green);  border-color:rgba(14,203,129,.3); }
+  .j-status-loss   { background:rgba(246,70,93,.12);  color:var(--red);    border-color:rgba(246,70,93,.3);  }
+  .j-pnl-input { background:var(--panel2); border:1px solid var(--border); color:var(--text); font-family:var(--font); font-size:11px; padding:3px 6px; border-radius:4px; width:80px; outline:none; -moz-appearance:textfield; }
+  .j-pnl-input::-webkit-inner-spin-button { -webkit-appearance:none; }
+  #j-tbody tr:hover td { background:rgba(255,255,255,.02); }
+  #j-tbody td { border-bottom:1px solid rgba(43,49,57,.4); }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">
+    <div class="logo-icon">◈</div>
+    <div>
+      <div class="logo-text">CRYPTO ASSISTANT PRO</div>
+      <div class="header-sub">TRADING TERMINAL v3.0</div>
+    </div>
+  </div>
+  <div class="live-indicator"><div class="live-dot"></div>BINANCE LIVE</div>
+  <div class="ema-legend">
+    <div class="ema-tag"><div class="ema-dot" style="background:#f0b90b;"></div><span style="color:#f0b90b;font-size:9px;">EMA20</span></div>
+    <div class="ema-tag"><div class="ema-dot" style="background:#6c7fff;"></div><span style="color:#6c7fff;font-size:9px;">EMA50</span></div>
+    <div class="ema-tag"><div class="ema-dot" style="background:#f6465d;"></div><span style="color:#f6465d;font-size:9px;">EMA200</span></div>
+  </div>
+  <div style="margin-left:auto;display:flex;align-items:center;gap:14px;">
+    <div>
+      <div id="header-price" style="font-size:20px;font-weight:700;">—</div>
+      <div id="header-change" style="font-size:11px;">—</div>
+    </div>
+  </div>
+</header>
+
+<div class="main">
+  <div class="left-panel">
+    <div class="controls-bar">
+      <div class="ctrl-group">
+        <span class="ctrl-label">Монета</span>
+        <select id="sym-select">
+          <option value="BTCUSDT">BTC/USDT</option>
+          <option value="ETHUSDT">ETH/USDT</option>
+          <option value="SOLUSDT">SOL/USDT</option>
+          <option value="DOGEUSDT">DOGE/USDT</option>
+          <option value="XRPUSDT">XRP/USDT</option>
+          <option value="BNBUSDT">BNB/USDT</option>
+        </select>
+      </div>
+      <div class="ctrl-group">
+        <span class="ctrl-label">ТФ</span>
+        <select id="tf-select">
+          <option value="5m">5m</option>
+          <option value="15m">15m</option>
+          <option value="1h" selected>1h</option>
+          <option value="4h">4h</option>
+          <option value="1d">1d</option>
+        </select>
+      </div>
+      <button class="btn" id="refresh-btn">⟳ ОБНОВИТЬ</button>
+      <div id="htf-status" style="margin-left:8px;font-size:10px;color:var(--muted);"></div>
+      <div style="margin-left:auto;">
+        <div id="header-price2" style="font-size:17px;font-weight:700;color:var(--text);">—</div>
+      </div>
+    </div>
+    <div class="chart-wrap">
+      <div id="chart-container"></div>
+      <div class="chart-overlay" id="chart-overlay">
+        <div class="spinner"></div>
+        <div class="overlay-text">ЗАГРУЗКА ДАННЫХ...</div>
+      </div>
+    </div>
+    <div id="analysis-panel" class="analysis-panel"></div>
+  </div>
+
+  <div class="right-panel">
+    <div class="block">
+      <div class="block-header">
+        <span class="block-icon">📡</span>
+        <span class="block-title">Рыночный Радар</span>
+      </div>
+      <div class="radar-tabs">
+        <button class="tab-btn active" data-tf="5m">5m · Скальп</button>
+        <button class="tab-btn" data-tf="1h">1h · День</button>
+        <button class="tab-btn" data-tf="4h">4h · Тренд</button>
+      </div>
+      <div class="radar-body">
+        <table class="radar-table">
+          <thead><tr><th>Монета</th><th>RSI</th><th>EMA</th><th>Объём</th><th>Сигнал</th></tr></thead>
+          <tbody id="radar-body"><tr><td colspan="5" style="text-align:center;color:var(--muted);padding:20px;">Загрузка...</td></tr></tbody>
+        </table>
+      </div>
+      <div class="radar-footer">
+        <div class="update-dot" id="radar-dot"></div>
+        <span id="radar-status">Ожидание...</span>
+      </div>
+    </div>
+
+    <!-- CALC / ACTIVE TRADE switcher -->
+    <div class="block" id="bottom-block">
+
+      <!-- ── CALCULATOR (shown when no active trade) ── -->
+      <div id="calc-panel">
+        <div class="block-header">
+          <span class="block-icon">🧮</span>
+          <span class="block-title">Калькулятор Риска</span>
+        </div>
+        <div class="calc-body">
+          <div class="field-row">
+            <div class="field-group"><label class="field-label">ДЕПОЗИТ ($)</label><input type="number" id="c-deposit" placeholder="10000" value="10000" min="0"></div>
+            <div class="field-group"><label class="field-label">РИСК (%)</label><input type="number" id="c-risk" placeholder="1" value="1" min="0.1" max="100" step="0.1"></div>
+          </div>
+          <div class="field-row">
+            <div class="field-group"><label class="field-label">ЦЕНА ВХОДА</label><input type="number" id="c-entry" placeholder="0" min="0" step="any"></div>
+            <div class="field-group"><label class="field-label">СТОП-ЛОСС</label><input type="number" id="c-stop" placeholder="0" min="0" step="any"></div>
+          </div>
+          <button class="btn primary" onclick="calcRisk()" style="width:100%;justify-content:center;padding:9px;">⚡ РАССЧИТАТЬ</button>
+          <div class="calc-result">
+            <div class="result-row"><span class="result-label">РИСК НА СДЕЛКУ</span><span class="result-value" id="r-risk">—</span></div>
+            <div class="result-divider"></div>
+            <div class="result-row"><span class="result-label">СУММА ВХОДА ($)</span><span class="result-value big" id="r-size">—</span></div>
+            <div class="result-row"><span class="result-label">КОЛ-ВО МОНЕТ</span><span class="result-value" id="r-coins">—</span></div>
+            <div class="result-divider"></div>
+            <div class="result-row"><span class="result-label">СТОП-РАССТОЯНИЕ</span><span class="result-value" id="r-pct" style="color:var(--red);">—</span></div>
+            <div class="risk-meter"><div class="risk-fill" id="risk-fill" style="width:0%;background:var(--green);"></div></div>
+          </div>
+          <div id="calc-error" class="calc-error" style="display:none;"></div>
+          <!-- FAST TRADE buttons (будут скрываться при плохом RR) -->
+          <div id="fast-buttons" style="display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-top:4px;">
+            <button class="btn" onclick="openFastTrade('LONG')" style="justify-content:center;padding:8px;border-color:var(--green);color:var(--green);font-weight:700;letter-spacing:1px;">⚡ FAST LONG</button>
+            <button class="btn" onclick="openFastTrade('SHORT')" style="justify-content:center;padding:8px;border-color:var(--red);color:var(--red);font-weight:700;letter-spacing:1px;">⚡ FAST SHORT</button>
+          </div>
+          <!-- TEST TELEGRAM BUTTON -->
+          <button class="btn" onclick="sendTelegramAlert('Все работает!')" style="width:100%;justify-content:center;padding:8px;margin-top:7px;border-color:var(--yellow);color:var(--yellow);letter-spacing:1px;">🔔 ТЕСТ ТЕЛЕГРАМ</button>
+        </div>
+      </div>
+
+      <!-- ── ACTIVE TRADE WIDGET (shown when trade is open) ── -->
+      <div id="active-trade-panel" style="display:none;flex-direction:column;height:100%;">
+        <div class="block-header" style="background:rgba(108,127,255,0.12);">
+          <span class="block-icon" id="at-icon">📈</span>
+          <span class="block-title" id="at-title">АКТИВНАЯ ПОЗИЦИЯ</span>
+          <span id="at-badge" style="margin-left:auto;font-size:9px;padding:2px 8px;border-radius:3px;font-weight:700;letter-spacing:1px;"></span>
+        </div>
+        <div style="padding:12px;display:flex;flex-direction:column;gap:10px;flex:1;overflow-y:auto;">
+
+          <!-- PnL display -->
+          <div style="background:var(--panel2);border-radius:8px;padding:12px;text-align:center;border:1px solid var(--border);">
+            <div style="font-size:9px;color:var(--muted);letter-spacing:2px;margin-bottom:4px;">НЕРЕАЛИЗОВАННЫЙ P&L</div>
+            <div id="at-pnl-usd" style="font-size:26px;font-weight:700;letter-spacing:1px;">—</div>
+            <div id="at-pnl-pct" style="font-size:13px;margin-top:2px;">—</div>
+          </div>
+
+          <!-- Trade details grid -->
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:7px;">
+            <div style="background:var(--panel2);border-radius:6px;padding:8px 10px;border:1px solid var(--border);">
+              <div style="font-size:8px;color:var(--muted);letter-spacing:1px;">МОНЕТА</div>
+              <div id="at-coin" style="font-size:13px;font-weight:700;margin-top:3px;">—</div>
+            </div>
+            <div style="background:var(--panel2);border-radius:6px;padding:8px 10px;border:1px solid var(--border);">
+              <div style="font-size:8px;color:var(--muted);letter-spacing:1px;">ЦЕНА ВХОДА</div>
+              <div id="at-entry" style="font-size:12px;font-weight:600;margin-top:3px;color:var(--accent);">—</div>
+            </div>
+            <div style="background:var(--panel2);border-radius:6px;padding:8px 10px;border:1px solid rgba(246,70,93,0.3);">
+              <div style="font-size:8px;color:var(--red);letter-spacing:1px;">СТОП-ЛОСС</div>
+              <div id="at-sl" style="font-size:12px;font-weight:600;margin-top:3px;color:var(--red);">—</div>
+            </div>
+            <div style="background:var(--panel2);border-radius:6px;padding:8px 10px;border:1px solid var(--border);">
+              <div style="font-size:8px;color:var(--muted);letter-spacing:1px;">ТЕКУЩАЯ ЦЕНА</div>
+              <div id="at-current" style="font-size:12px;font-weight:600;margin-top:3px;">—</div>
+            </div>
+          </div>
+
+          <!-- TPs -->
+          <div id="at-tps" style="display:flex;flex-direction:column;gap:4px;"></div>
+
+          <!-- Time open -->
+          <div style="font-size:9px;color:var(--muted);text-align:center;" id="at-time">—</div>
+
+          <!-- Close button -->
+          <button onclick="forceCloseTrade()" style="background:rgba(246,70,93,0.12);border:1px solid rgba(246,70,93,0.4);color:var(--red);font-family:var(--font);font-size:12px;padding:10px;border-radius:6px;cursor:pointer;font-weight:700;letter-spacing:1px;transition:all .2s;width:100%;">❌ ЗАКРЫТЬ ПРИНУДИТЕЛЬНО</button>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- JOURNAL BUTTON -->
+    <div style="padding:10px 12px;flex-shrink:0;border-top:1px solid var(--border);">
+      <button class="btn" onclick="openJournal()" style="width:100%;justify-content:center;gap:8px;padding:9px 0;border-color:var(--accent);color:var(--accent);">
+        📒 ЖУРНАЛ СДЕЛОК
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════ -->
+<!-- TRADE JOURNAL MODAL                             -->
+<!-- ═══════════════════════════════════════════════ -->
+<div id="journal-modal" style="display:none;position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,0.75);backdrop-filter:blur(6px);overflow-y:auto;padding:20px;">
+  <div id="journal-inner" style="max-width:860px;margin:0 auto;background:var(--panel);border:1px solid var(--border);border-radius:12px;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,0.6);">
+
+    <!-- Modal Header -->
+    <div style="background:var(--panel2);border-bottom:1px solid var(--border);padding:14px 20px;display:flex;align-items:center;justify-content:space-between;">
+      <div style="display:flex;align-items:center;gap:10px;">
+        <span style="font-size:18px;">📒</span>
+        <div>
+          <div style="font-size:13px;font-weight:700;letter-spacing:2px;background:linear-gradient(90deg,var(--accent),var(--accent2));-webkit-background-clip:text;-webkit-text-fill-color:transparent;">ЖУРНАЛ СДЕЛОК</div>
+          <div style="font-size:9px;color:var(--muted);letter-spacing:1px;">TRADE JOURNAL</div>
+        </div>
+      </div>
+      <button onclick="closeJournal()" style="background:rgba(246,70,93,0.1);border:1px solid rgba(246,70,93,0.3);color:var(--red);font-size:16px;width:32px;height:32px;border-radius:6px;cursor:pointer;display:flex;align-items:center;justify-content:center;font-family:var(--font);">✕</button>
+    </div>
+
+    <!-- New Trade Form -->
+    <div style="padding:16px 20px;border-bottom:1px solid var(--border);">
+      <div style="font-size:9px;color:var(--muted);letter-spacing:2px;margin-bottom:12px;">НОВАЯ СДЕЛКА</div>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:10px;">
+        <div class="field-group">
+          <label class="field-label">МОНЕТА</label>
+          <select id="j-coin" style="background:var(--panel2);border:1px solid var(--border);color:var(--text);font-family:var(--font);font-size:12px;padding:7px 9px;border-radius:5px;width:100%;outline:none;">
+            <option value="BTCUSDT">BTC/USDT</option>
+            <option value="ETHUSDT">ETH/USDT</option>
+            <option value="SOLUSDT">SOL/USDT</option>
+            <option value="XRPUSDT">XRP/USDT</option>
+            <option value="BNBUSDT">BNB/USDT</option>
+            <option value="DOGEUSDT">DOGE/USDT</option>
+            <option value="ADAUSDT">ADA/USDT</option>
+            <option value="AVAXUSDT">AVAX/USDT</option>
+          </select>
+        </div>
+        <div class="field-group">
+          <label class="field-label">НАПРАВЛЕНИЕ</label>
+          <select id="j-dir" style="background:var(--panel2);border:1px solid var(--border);color:var(--text);font-family:var(--font);font-size:12px;padding:7px 9px;border-radius:5px;width:100%;outline:none;">
+            <option value="LONG">📈 LONG</option>
+            <option value="SHORT">📉 SHORT</option>
+          </select>
+        </div>
+        <div class="field-group">
+          <label class="field-label">ДАТА</label>
+          <input type="date" id="j-date" style="background:var(--panel2);border:1px solid var(--border);color:var(--text);font-family:var(--font);font-size:12px;padding:7px 9px;border-radius:5px;width:100%;outline:none;color-scheme:dark;">
+        </div>
+      </div>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:10px;">
+        <div class="field-group">
+          <label class="field-label">ЦЕНА ВХОДА</label>
+          <input type="number" id="j-entry" placeholder="0" min="0" step="any">
+        </div>
+        <div class="field-group">
+          <label class="field-label">СТОП-ЛОСС</label>
+          <input type="number" id="j-sl" placeholder="0" min="0" step="any">
+        </div>
+        <div class="field-group">
+          <label class="field-label">СУММА ВХОДА ($)</label>
+          <input type="number" id="j-size" placeholder="0" min="0" step="any">
+        </div>
+      </div>
+
+      <!-- Take-Profits dynamic block -->
+      <div style="margin-bottom:10px;">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+          <span class="field-label">ТЕЙК-ПРОФИТЫ</span>
+          <button onclick="addTP()" id="j-add-tp" style="background:rgba(108,127,255,0.1);border:1px solid rgba(108,127,255,0.3);color:var(--accent);font-family:var(--font);font-size:10px;padding:3px 10px;border-radius:4px;cursor:pointer;letter-spacing:1px;">+ ДОБАВИТЬ ТП</button>
+        </div>
+        <div id="j-tp-fields" style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;">
+          <div class="field-group">
+            <label class="field-label">ТП-1</label>
+            <input type="number" id="j-tp-1" placeholder="0" min="0" step="any">
+          </div>
+        </div>
+      </div>
+
+      <div class="field-group" style="margin-bottom:12px;">
+        <label class="field-label">ЗАМЕТКИ (необязательно)</label>
+        <textarea id="j-notes" placeholder="Причина входа, паттерн, наблюдения..." style="background:var(--panel2);border:1px solid var(--border);color:var(--text);font-family:var(--font);font-size:11px;padding:7px 9px;border-radius:5px;width:100%;outline:none;resize:vertical;min-height:50px;line-height:1.5;"></textarea>
+      </div>
+
+      <div style="display:flex;gap:8px;">
+        <button onclick="saveTrade()" class="btn primary" style="flex:1;justify-content:center;padding:9px;">💾 СОХРАНИТЬ СДЕЛКУ</button>
+        <button onclick="closeJournal()" class="btn" style="padding:9px 16px;">❌ ОТМЕНА</button>
+      </div>
+      <div id="j-error" style="color:var(--red);font-size:10px;text-align:center;margin-top:6px;display:none;"></div>
+    </div>
+
+    <!-- Trade Table -->
+    <div style="padding:14px 20px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
+        <div style="font-size:9px;color:var(--muted);letter-spacing:2px;">ИСТОРИЯ СДЕЛОК (<span id="j-trade-count">0</span>)</div>
+        <div style="display:flex;gap:6px;align-items:center;">
+          <span id="j-pnl-summary" style="font-size:10px;color:var(--muted);"></span>
+          <button onclick="exportJournal()" style="background:transparent;border:1px solid var(--border);color:var(--muted);font-family:var(--font);font-size:9px;padding:3px 8px;border-radius:4px;cursor:pointer;letter-spacing:1px;">⬇ CSV</button>
+        </div>
+      </div>
+      <div style="overflow-x:auto;max-height:300px;overflow-y:auto;border:1px solid var(--border);border-radius:6px;">
+        <table style="width:100%;border-collapse:collapse;font-size:11px;" id="j-table">
+          <thead>
+            <tr style="background:var(--panel2);position:sticky;top:0;z-index:1;">
+              <th style="padding:8px 10px;text-align:left;font-size:8px;color:var(--muted);letter-spacing:1px;font-weight:500;border-bottom:1px solid var(--border);">ДАТА</th>
+              <th style="padding:8px 10px;text-align:left;font-size:8px;color:var(--muted);letter-spacing:1px;font-weight:500;border-bottom:1px solid var(--border);">МОНЕТА</th>
+              <th style="padding:8px 10px;text-align:left;font-size:8px;color:var(--muted);letter-spacing:1px;font-weight:500;border-bottom:1px solid var(--border);">ТИП</th>
+              <th style="padding:8px 10px;text-align:right;font-size:8px;color:var(--muted);letter-spacing:1px;font-weight:500;border-bottom:1px solid var(--border);">ВХОД</th>
+              <th style="padding:8px 10px;text-align:right;font-size:8px;color:var(--muted);letter-spacing:1px;font-weight:500;border-bottom:1px solid var(--border);">СТОП</th>
+              <th style="padding:8px 10px;text-align:right;font-size:8px;color:var(--muted);letter-spacing:1px;font-weight:500;border-bottom:1px solid var(--border);">СУММА</th>
+              <th style="padding:8px 10px;text-align:left;font-size:8px;color:var(--muted);letter-spacing:1px;font-weight:500;border-bottom:1px solid var(--border);">ТП</th>
+              <th style="padding:8px 10px;text-align:center;font-size:8px;color:var(--muted);letter-spacing:1px;font-weight:500;border-bottom:1px solid var(--border);">СТАТУС</th>
+              <th style="padding:8px 10px;text-align:center;font-size:8px;color:var(--muted);letter-spacing:1px;font-weight:500;border-bottom:1px solid var(--border);">P&L</th>
+              <th style="padding:8px 10px;text-align:center;border-bottom:1px solid var(--border);"></th>
+            </tr>
+          </thead>
+          <tbody id="j-tbody">
+            <tr id="j-empty-row">
+              <td colspan="10" style="text-align:center;color:var(--muted);padding:24px;font-size:11px;">Нет записей. Добавьте первую сделку.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<script>
+// ═══════════════════════════════════════════════
+// TELEGRAM CONFIG
+// ═══════════════════════════════════════════════
+const TELEGRAM_BOT_TOKEN = '8798928207:AAF1cb0UPfi1k2-uajk-HkkKnFGm3uVgxC0';
+const TELEGRAM_CHAT_ID = '1086359928';
+const lastAlertTime = {}; // { 'BTCUSDT': timestamp } — защита от спама (15 мин)
+
+async function sendTelegramAlert(message) {
+  try {
+    const chatId = String(TELEGRAM_CHAT_ID).trim();
+    const text = encodeURIComponent(message);
+    const tgUrl = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage?chat_id=${chatId}&text=${text}`;
+    const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(tgUrl)}`;
+    console.log('Sending to URL:', proxyUrl);
+    const res = await fetch(proxyUrl);
+    if (!res.ok) {
+      const errText = await res.text();
+      console.error('Telegram Error:', res.status, errText);
+    } else {
+      console.log('Telegram alert sent successfully');
+    }
+  } catch(e) { console.error('Telegram Error:', e); }
+}
+
+function canSendAlert(symbol) {
+  const now = Date.now();
+  const last = lastAlertTime[symbol] || 0;
+  if (now - last < 15 * 60 * 1000) return false; // 15 минут кулдаун
+  lastAlertTime[symbol] = now;
+  return true;
+}
+
+// ═══════════════════════════════════════════════
+// NETWORK
+// ═══════════════════════════════════════════════
+const API_BASE = 'https://api.binance.com/api/v3/klines';
+
+function fetchWithTimeout(url, ms) {
+  return new Promise((resolve, reject) => {
+    const t = setTimeout(() => reject(new Error('Timeout')), ms);
+    fetch(url).then(r => { clearTimeout(t); resolve(r); }).catch(e => { clearTimeout(t); reject(e); });
+  });
+}
+
+async function fetchWithProxy(rawUrl) {
+  const attempts = [
+    () => fetchWithTimeout(rawUrl, 8000),
+    () => fetchWithTimeout(`https://api.allorigins.win/raw?url=${encodeURIComponent(rawUrl)}`, 10000),
+    () => fetchWithTimeout(`https://corsproxy.io/?${encodeURIComponent(rawUrl)}`, 10000),
+  ];
+  let lastErr = '';
+  for (const attempt of attempts) {
+    try {
+      const res = await attempt();
+      if (!res.ok) { lastErr = `HTTP ${res.status}`; continue; }
+      const data = await res.json();
+      if (Array.isArray(data) && data.length > 0) return data;
+      lastErr = 'Пустой ответ';
+    } catch(e) { lastErr = e.message; }
+  }
+  throw new Error('Не удалось получить данные: ' + lastErr);
+}
+
+async function fetchKlines(symbol, interval, limit = 100) {
+  return fetchWithProxy(`${API_BASE}?symbol=${symbol}&interval=${interval}&limit=${limit}`);
+}
+
+// ═══════════════════════════════════════════════
+// CHART STATE
+// ═══════════════════════════════════════════════
+const RADAR_COINS = ['BTCUSDT','ETHUSDT','SOLUSDT','XRPUSDT','BNBUSDT','DOGEUSDT','ADAUSDT','AVAXUSDT'];
+let chart = null, candleSeries = null;
+let emaSeries20 = null, emaSeries50 = null, emaSeries200 = null;
+let radarTf = '5m', radarTimer = null;
+
+const HTF_MAP = { '5m':'1h', '15m':'4h', '1h':'4h', '4h':'1d', '1d':'1w' };
+
+// Унифицированные пороги силы сигнала
+const THRESHOLD_STRONG_BUY = 5;
+const THRESHOLD_BUY        = 2;
+
+// ── TRIGGER / HUNT MODE ──
+const TRIGGER_DELTA_SCORE   = 3;                // минимальный скачок score для импульса
+const TRIGGER_BUY_MIN_SCORE = 5;                // минимум для BUY
+const TRIGGER_SELL_MIN_SCORE = -5;              // максимум для SELL
+const TRIGGER_COOLDOWN_MS   = 30 * 60 * 1000;   // 30 минут
+
+// Хранилище состояния триггеров по ключу "symbol|tf"
+// { previousScore, lastTriggeredTime, status, entryPrice, atrAtTrigger, sltpAtTrigger }
+const triggerStateMap = {};
+
+// ═══ DEMO TRADING STATE ═══
+const DEMO_KEY = 'demoActiveTrade_v1';
+let activeTrade      = null;   // live object in memory
+let priceLines       = {};     // { entry, sl, tp0, tp1, tp2 … }
+let monitorInterval  = null;
+let lastKnownPrice   = null;
+let lastSignal       = null;   // последний рассчитанный сигнальный объект для текущего графика
+
+function loadActiveTrade() {
+  try { return JSON.parse(localStorage.getItem(DEMO_KEY) || 'null'); }
+  catch { return null; }
+}
+function persistActiveTrade(t) {
+  if (t) localStorage.setItem(DEMO_KEY, JSON.stringify(t));
+  else   localStorage.removeItem(DEMO_KEY);
+}
+
+// Task 2: Hysteresis — prevents signal flickering on micro-oscillations
+// Signal only changes state when score crosses exit thresholds
+let lastSignalState = 'neutral'; // 'buy' | 'sell' | 'neutral'
+
+function applyHysteresis(score) {
+  // Entry thresholds: need score >= 2 to become BUY, <= -2 for SELL
+  // Exit thresholds: BUY exits only at score <= 1, SELL exits at score >= -1
+  if (lastSignalState === 'buy') {
+    if (score <= 1) lastSignalState = 'neutral';       // exit BUY → Neutral
+  } else if (lastSignalState === 'sell') {
+    if (score >= -1) lastSignalState = 'neutral';      // exit SELL → Neutral
+  } else {
+    // neutral state: enter BUY or SELL only at strong thresholds
+    if (score >= 2)  lastSignalState = 'buy';
+    if (score <= -2) lastSignalState = 'sell';
+  }
+  return lastSignalState;
+}
+
+// UTC+2 offset in seconds
+const UTC_OFFSET_SEC = 2 * 3600; // UTC+2
+
+function initChart() {
+  const el = document.getElementById('chart-container');
+  chart = LightweightCharts.createChart(el, {
+    layout: { background: { color: '#0b0e11' }, textColor: '#848e9c' },
+    grid: { vertLines: { color: '#1a1f26' }, horzLines: { color: '#1a1f26' } },
+    crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
+    rightPriceScale: { borderColor: '#2b3139' },
+    timeScale: {
+      borderColor: '#2b3139',
+      timeVisible: true,
+      secondsVisible: false,
+      tickMarkFormatter: (time, tickMarkType, locale) => {
+        const d = new Date((time + UTC_OFFSET_SEC) * 1000);
+        const h = d.getUTCHours().toString().padStart(2,'0');
+        const m = d.getUTCMinutes().toString().padStart(2,'0');
+        const day = d.getUTCDate().toString().padStart(2,'0');
+        const mon = (d.getUTCMonth()+1).toString().padStart(2,'0');
+        if (tickMarkType <= 1) return `${day}.${mon}`;
+        return `${h}:${m}`;
+      },
+    },
+  });
+  candleSeries = chart.addCandlestickSeries({
+    upColor:'#0ecb81', downColor:'#f6465d',
+    borderUpColor:'#0ecb81', borderDownColor:'#f6465d',
+    wickUpColor:'#0ecb81', wickDownColor:'#f6465d',
+  });
+  const ro = new ResizeObserver(() => chart.applyOptions({ width: el.clientWidth, height: el.clientHeight }));
+  ro.observe(el);
+  chart.applyOptions({ width: el.clientWidth, height: el.clientHeight });
+}
+
+// ── Dynamic price format based on coin price magnitude ──
+function updatePriceFormat(price) {
+  if (!price || price <= 0) return { type: 'price', precision: 2, minMove: 0.01 };
+  if (price < 0.0001)  return { type: 'price', precision: 8, minMove: 0.00000001 };
+  if (price < 0.01)    return { type: 'price', precision: 6, minMove: 0.000001   };
+  if (price < 1)       return { type: 'price', precision: 5, minMove: 0.00001    };
+  if (price < 10)      return { type: 'price', precision: 4, minMove: 0.0001     };
+  if (price < 1000)    return { type: 'price', precision: 3, minMove: 0.001      };
+  return                      { type: 'price', precision: 2, minMove: 0.01       };
+}
+
+// ── Dynamic decimal places for input fields ──
+function priceDecimals(price) {
+  if (!price || price <= 0) return 2;
+  if (price < 0.0001)  return 8;
+  if (price < 0.01)    return 6;
+  if (price < 1)       return 5;
+  if (price < 10)      return 4;
+  if (price < 1000)    return 3;
+  return 2;
+}
+
+// ═══════════════════════════════════════════════
+// ── INDICATORS ──
+// ═══════════════════════════════════════════════
+
+// RSI
+function calcRSI(closes, period = 14) {
+  if (closes.length < period + 1) return null;
+  let ag = 0, al = 0;
+  for (let i = 1; i <= period; i++) {
+    const d = closes[i] - closes[i-1];
+    if (d > 0) ag += d; else al -= d;
+  }
+  ag /= period; al /= period;
+  for (let i = period + 1; i < closes.length; i++) {
+    const d = closes[i] - closes[i-1];
+    ag = (ag * (period-1) + Math.max(d,0)) / period;
+    al = (al * (period-1) + Math.max(-d,0)) / period;
+  }
+  return al === 0 ? 100 : 100 - 100 / (1 + ag/al);
+}
+
+// EMA single value
+function calcEMA(closes, period) {
+  if (closes.length < period) return null;
+  const k = 2 / (period + 1);
+  let ema = closes.slice(0, period).reduce((a,b) => a+b, 0) / period;
+  for (let i = period; i < closes.length; i++) ema = closes[i] * k + ema * (1 - k);
+  return ema;
+}
+
+// EMA full array (for chart)
+function calcEMAArray(closes, period) {
+  if (closes.length < period) return closes.map(() => null);
+  const k = 2 / (period + 1);
+  const out = closes.map(() => null);
+  let ema = closes.slice(0, period).reduce((a,b) => a+b, 0) / period;
+  out[period - 1] = ema;
+  for (let i = period; i < closes.length; i++) {
+    ema = closes[i] * k + ema * (1 - k);
+    out[i] = ema;
+  }
+  return out;
+}
+
+// MACD
+function calcMACD(closes) {
+  if (closes.length < 35) return null;
+  const k12 = 2/13, k26 = 2/27, k9 = 2/10;
+  let ema12 = closes.slice(0,12).reduce((a,b)=>a+b,0)/12;
+  let ema26 = closes.slice(0,26).reduce((a,b)=>a+b,0)/26;
+  for (let i = 12; i < 26; i++) ema12 = closes[i]*k12 + ema12*(1-k12);
+  for (let i = 26; i < closes.length; i++) {
+    ema12 = closes[i]*k12 + ema12*(1-k12);
+    ema26 = closes[i]*k26 + ema26*(1-k26);
+  }
+  // Build macd line for signal
+  const macdLine = [];
+  let e12 = closes.slice(0,12).reduce((a,b)=>a+b,0)/12;
+  let e26 = closes.slice(0,26).reduce((a,b)=>a+b,0)/26;
+  for (let i = 12; i < 26; i++) e12 = closes[i]*k12 + e12*(1-k12);
+  for (let i = 26; i < closes.length; i++) {
+    e12 = closes[i]*k12 + e12*(1-k12);
+    e26 = closes[i]*k26 + e26*(1-k26);
+    macdLine.push(e12 - e26);
+  }
+  if (macdLine.length < 9) return null;
+  let signal = macdLine.slice(0,9).reduce((a,b)=>a+b,0)/9;
+  for (let i = 9; i < macdLine.length; i++) signal = macdLine[i]*k9 + signal*(1-k9);
+  const macd = macdLine[macdLine.length-1];
+  const hist = macd - signal;
+  const prevHist = macdLine.length > 1 ? macdLine[macdLine.length-2] - signal : hist;
+  return { macd, signal, hist, crossBull: prevHist < 0 && hist > 0, crossBear: prevHist > 0 && hist < 0, bullish: hist > 0, rising: hist > prevHist };
+}
+
+// Volume
+function calcVolumeSignal(candles, period = 20) {
+  if (candles.length < period + 1) return { ratio: null, spike: false, bullish: false };
+  const avg = candles.slice(-period-1,-1).map(c=>c.volume).reduce((a,b)=>a+b,0) / period;
+  const last = candles[candles.length-1];
+  const ratio = last.volume / avg;
+  return { ratio, spike: ratio > 1.5, strongSpike: ratio > 2.5, bullish: last.close > last.open, avg };
+}
+
+// Support & Resistance — clustered pivots
+function calcSupportResistance(candles) {
+  const price = candles[candles.length-1].close;
+  const W = 5, CLUSTER = 0.015;
+  const rawSup = [], rawRes = [];
+  for (let i = W; i < candles.length - W; i++) {
+    let lo = true, hi = true;
+    for (let j = i-W; j <= i+W; j++) {
+      if (j === i) continue;
+      if (candles[j].low  <  candles[i].low)  lo = false;
+      if (candles[j].high >  candles[i].high) hi = false;
+    }
+    if (lo) rawSup.push({ price: candles[i].low,  touches: 1 });
+    if (hi) rawRes.push({ price: candles[i].high, touches: 1 });
+  }
+  function merge(pivots) {
+    const sorted = [...pivots].sort((a,b)=>a.price-b.price);
+    const out = [];
+    for (const p of sorted) {
+      const last = out[out.length-1];
+      if (last && Math.abs(p.price-last.price)/last.price < CLUSTER) {
+        const t = last.touches + p.touches;
+        last.price = (last.price*last.touches + p.price*p.touches) / t;
+        last.touches = t;
+      } else out.push({ price: p.price, touches: p.touches });
+    }
+    return out.sort((a,b)=>b.touches-a.touches);
+  }
+  const supports    = merge(rawSup).filter(l => l.price < price);
+  const resistances = merge(rawRes).filter(l => l.price > price);
+  supports.sort((a,b) => (price-a.price)-(price-b.price));
+  resistances.sort((a,b) => (a.price-price)-(b.price-price));
+  return {
+    nearestSupport:    supports[0]    ? supports[0].price    : null,
+    nearestResistance: resistances[0] ? resistances[0].price : null,
+    supTouches:  supports[0]    ? supports[0].touches    : 0,
+    resTouches:  resistances[0] ? resistances[0].touches : 0,
+    supports:    supports.slice(0,2).map(l=>l.price),
+    resistances: resistances.slice(0,2).map(l=>l.price),
+  };
+}
+
+// ── CANDLESTICK PATTERNS ──
+function detectPatterns(candles) {
+  const patterns = [];
+  const n = candles.length;
+  if (n < 3) return patterns;
+  const c0 = candles[n-1]; // current
+  const c1 = candles[n-2]; // prev
+  const c2 = candles[n-3]; // prev prev
+
+  const body0 = Math.abs(c0.close - c0.open);
+  const body1 = Math.abs(c1.close - c1.open);
+  const range0 = c0.high - c0.low;
+  const range1 = c1.high - c1.low;
+  const bull0 = c0.close > c0.open;
+  const bull1 = c1.close > c1.open;
+  const bull2 = c2.close > c2.open;
+
+  // Hammer (bullish reversal) — small body at top, long lower wick
+  const lowerWick0 = bull0 ? c0.open - c0.low : c0.close - c0.low;
+  const upperWick0 = bull0 ? c0.high - c0.close : c0.high - c0.open;
+  if (!bull1 && body0 > 0 && lowerWick0 > body0 * 2 && upperWick0 < body0 * 0.5)
+    patterns.push({ name: 'Молот', bull: true, strength: 2 });
+
+  // Shooting Star (bearish) — small body at bottom, long upper wick
+  const upperWick0b = bull0 ? c0.high - c0.close : c0.high - c0.open;
+  const lowerWick0b = bull0 ? c0.open - c0.low   : c0.close - c0.low;
+  if (bull1 && body0 > 0 && upperWick0b > body0 * 2 && lowerWick0b < body0 * 0.5)
+    patterns.push({ name: 'Падающая звезда', bull: false, strength: 2 });
+
+  // Doji (indecision)
+  if (range0 > 0 && body0 / range0 < 0.1)
+    patterns.push({ name: 'Доджи', bull: null, strength: 1 });
+
+  // Bullish Engulfing
+  if (!bull1 && bull0 && c0.open <= c1.close && c0.close >= c1.open && body0 > body1)
+    patterns.push({ name: 'Бычье поглощение', bull: true, strength: 3 });
+
+  // Bearish Engulfing
+  if (bull1 && !bull0 && c0.open >= c1.close && c0.close <= c1.open && body0 > body1)
+    patterns.push({ name: 'Медвежье поглощение', bull: false, strength: 3 });
+
+  // Morning Star (3-candle bullish reversal)
+  if (!bull2 && body1/range1 < 0.25 && bull0 && c0.close > (c2.open + c2.close)/2)
+    patterns.push({ name: 'Утренняя звезда', bull: true, strength: 3 });
+
+  // Evening Star (3-candle bearish reversal)
+  if (bull2 && body1/range1 < 0.25 && !bull0 && c0.close < (c2.open + c2.close)/2)
+    patterns.push({ name: 'Вечерняя звезда', bull: false, strength: 3 });
+
+  // Three White Soldiers (strong bull)
+  if (bull0 && bull1 && bull2 && c0.close > c1.close && c1.close > c2.close
+      && c0.open > c1.open && c1.open > c2.open)
+    patterns.push({ name: '3 белых солдата', bull: true, strength: 3 });
+
+  // Three Black Crows (strong bear)
+  if (!bull0 && !bull1 && !bull2 && c0.close < c1.close && c1.close < c2.close
+      && c0.open < c1.open && c1.open < c2.open)
+    patterns.push({ name: '3 чёрных вороны', bull: false, strength: 3 });
+
+  return patterns;
+}
+
+// ── EMA TREND ──
+function calcEMATrend(closes) {
+  const e20  = calcEMA(closes, 20);
+  const e50  = calcEMA(closes, 50);
+  const e200 = calcEMA(closes, Math.min(200, closes.length - 1));
+  const price = closes[closes.length - 1];
+  if (!e20 || !e50) return null;
+  const aboveAll = price > e20 && price > e50 && (e200 ? price > e200 : true);
+  const belowAll = price < e20 && price < e50 && (e200 ? price < e200 : true);
+  const golden = e20 > e50; // EMA20 above EMA50
+  const death  = e20 < e50;
+  return { e20, e50, e200, price, aboveAll, belowAll, golden, death,
+    label: aboveAll ? 'Бычий тренд' : belowAll ? 'Медвежий тренд' : 'Смешанный',
+    trend: aboveAll ? 1 : belowAll ? -1 : 0 };
+}
+
+// ── HTF CONFIRMATION ──
+async function fetchHTFConfirmation(symbol, tf) {
+  const htfTf = HTF_MAP[tf] || '4h';
+  try {
+    const raw = await fetchKlines(symbol, htfTf, 60);
+    const candles = raw.map(k => ({
+      open: parseFloat(k[1]), high: parseFloat(k[2]),
+      low: parseFloat(k[3]), close: parseFloat(k[4]), volume: parseFloat(k[5])
+    }));
+    const closes = candles.map(c => c.close);
+    const rsi  = calcRSI(closes, 14);
+    const macd = calcMACD(closes);
+    const ema  = calcEMATrend(closes);
+    return { tf: htfTf, rsi, macd, ema, candles };
+  } catch { return null; }
+}
+
+// ── ATR (Average True Range, Wilder smoothing) ──
+function calcATR(candles, period = 14) {
+  if (candles.length < period + 1) return null;
+  // True Range for each bar
+  const trs = [];
+  for (let i = 1; i < candles.length; i++) {
+    const high  = candles[i].high;
+    const low   = candles[i].low;
+    const prevC = candles[i - 1].close;
+    trs.push(Math.max(high - low, Math.abs(high - prevC), Math.abs(low - prevC)));
+  }
+  // Wilder smoothing (same as RSI)
+  let atr = trs.slice(0, period).reduce((a, b) => a + b, 0) / period;
+  for (let i = period; i < trs.length; i++) {
+    atr = (atr * (period - 1) + trs[i]) / period;
+  }
+  return atr;
+}
+
+// ── Fibonacci Levels on last N candles ──
+function calcFibonacciLevels(candles, lookback = 50) {
+  if (!candles || !candles.length) return null;
+  const slice = candles.slice(-lookback);
+  let hi = -Infinity, lo = Infinity;
+  for (const c of slice) {
+    if (c.high > hi) hi = c.high;
+    if (c.low  < lo) lo = c.low;
+  }
+  if (!isFinite(hi) || !isFinite(lo) || hi === lo) return null;
+  const range = hi - lo;
+  const level0382 = lo + range * 0.382;
+  const level0500 = lo + range * 0.5;
+  const level0618 = lo + range * 0.618;
+  return {
+    low: lo,
+    high: hi,
+    level0382,
+    level0500,
+    level0618,
+  };
+}
+
+// ── SL/TP ──
+function distPct(a, b) { return Math.abs((a - b) / a * 100); }
+
+// ATR, рассчитанный при последнем вызове calcCompositeSignal (для getTradePlan)
+let _lastAtrForPlan = null;
+
+// Базовая логика расчёта SL/TP (как было раньше — ATR / проценты)
+function calcSLTP(score, sr, price, atr) {
+  const isBull = score >= 1, isBear = score <= -1;
+  if (!isBull && !isBear) return null;
+
+  // ── ATR multipliers for dynamic SL/TP ──
+  // If ATR available: SL = 1.5×ATR, TP1 = 2.5×ATR, TP2 = 4.0×ATR
+  // Fallback if ATR null: fixed % (2.5% / 3% / 6%)
+  const SL_MULT  = 1.5;
+  const TP1_MULT = 2.5;
+  const TP2_MULT = 4.0;
+  const slAmt  = atr ? atr * SL_MULT  : price * 0.025;
+  const tp1Amt = atr ? atr * TP1_MULT : price * 0.03;
+  const tp2Amt = atr ? atr * TP2_MULT : price * 0.06;
+  const atrPct = atr ? (atr / price * 100).toFixed(2) : null;
+  const atrNote = atrPct ? `ATR ${atrPct}%` : 'фикс.%';
+
+  let sl, tp1, tp2, slNote, tp1Note, tp2Note;
+
+  if (isBull) {
+    // SL: use support level if close enough, otherwise ATR-based floor
+    if (sr.nearestSupport && distPct(price, sr.nearestSupport) < distPct(price, price - slAmt)) {
+      sl     = sr.nearestSupport * 0.998;
+      slNote = `под поддержкой ${fmt(sr.nearestSupport)} · ${atrNote}`;
+    } else {
+      sl     = price - slAmt;
+      slNote = `1.5×ATR · ${atrNote}`;
+    }
+    // TP1: resistance if available and closer than ATR target, else ATR target
+    if (sr.nearestResistance && sr.nearestResistance < price + tp1Amt * 1.5) {
+      tp1     = sr.nearestResistance * 0.998;
+      tp1Note = `у сопротивления ${fmt(sr.nearestResistance)}`;
+    } else {
+      tp1     = price + tp1Amt;
+      tp1Note = `2.5×ATR · ${atrNote}`;
+    }
+    tp2     = price + tp2Amt;
+    tp2Note = `4.0×ATR · пробой`;
+  } else {
+    // SHORT
+    if (sr.nearestResistance && distPct(price, sr.nearestResistance) < distPct(price, price + slAmt)) {
+      sl     = sr.nearestResistance * 1.002;
+      slNote = `над сопротивл. ${fmt(sr.nearestResistance)} · ${atrNote}`;
+    } else {
+      sl     = price + slAmt;
+      slNote = `1.5×ATR · ${atrNote}`;
+    }
+    if (sr.nearestSupport && sr.nearestSupport > price - tp1Amt * 1.5) {
+      tp1     = sr.nearestSupport * 1.002;
+      tp1Note = `у поддержки ${fmt(sr.nearestSupport)}`;
+    } else {
+      tp1     = price - tp1Amt;
+      tp1Note = `2.5×ATR · ${atrNote}`;
+    }
+    tp2     = price - tp2Amt;
+    tp2Note = `4.0×ATR · пробой`;
+  }
+
+  const slPct  = distPct(price, sl);
+  const tp1Pct = distPct(price, tp1);
+  const tp2Pct = distPct(price, tp2);
+  return {
+    sl, tp1, tp2, slNote, tp1Note, tp2Note,
+    slPct, tp1Pct, tp2Pct,
+    atr, atrPct,
+    rr1: (tp1Pct / slPct).toFixed(2),
+    rr2: (tp2Pct / slPct).toFixed(2),
+    isBull,
+  };
+}
+
+// Унифицированный торговый план для интерфейса и FAST-сделок
+// Возвращает:
+// { sl, tps[], slNote, slPct, rr[], isValidRR }
+function getTradePlan(score, sr, price, entryPrice) {
+  const atr = _lastAtrForPlan;
+  const core = calcSLTP(score, sr, price, atr);
+  if (!core) return null;
+
+  const basePrice = entryPrice || price;
+
+  const tps = [];
+  const rr  = [];
+  if (core.tp1 != null) {
+    tps.push(core.tp1);
+    rr.push(core.rr1);
+  }
+  if (core.tp2 != null) {
+    tps.push(core.tp2);
+    rr.push(core.rr2);
+  }
+
+  const slPct = distPct(basePrice, core.sl);
+
+  // ── Aggressive RR filter based on TP2 vs SL ──
+  let isValidRR = false;
+  if (core.tp2 != null && core.sl != null && basePrice && basePrice !== core.sl) {
+    const rrPrice = Math.abs(core.tp2 - basePrice) / Math.abs(basePrice - core.sl);
+    isValidRR = rrPrice >= 2.0;
+  }
+
+  return {
+    sl: core.sl,
+    tps,
+    slNote: core.slNote,
+    slPct,
+    rr,
+    isValidRR,
+  };
+}
+
+// ═══════════════════════════════════════════════
+// ── COMPOSITE SIGNAL ENGINE v3 ──
+// Единый алгоритм:
+// 1) Считаем все факторы (RSI, EMA, MACD, S/R, Vol, Patterns, Fibo, HTF, ATR)
+// 2) Строим общий score
+// 3) Применяем фильтры: HTF-trend, волатильность (ATR), Fibo-зона, порог Score
+// ═══════════════════════════════════════════════
+function getCompositeScore(candles, htfData) {
+  // Базовая проверка: достаточно ли свечей вообще
+  if (!candles || candles.length < 35) return null;
+
+  const closes = candles.map(c => c.close);
+  const price  = closes[closes.length - 1];
+
+  // ── 1. Базовые индикаторы (локальные, без фильтров) ──
+  const rsi  = calcRSI(closes, 14);
+  const macd = calcMACD(closes);
+  const ema  = calcEMATrend(closes);
+
+  const srRaw = calcSupportResistance(candles) || {};
+  const sr = {
+    nearestSupport:    srRaw.nearestSupport    ?? null,
+    nearestResistance: srRaw.nearestResistance ?? null,
+    supTouches:        srRaw.supTouches        ?? 0,
+    resTouches:        srRaw.resTouches        ?? 0,
+  };
+
+  const vol  = calcVolumeSignal(candles, 20) || { ratio: null, spike: false, bullish: false };
+  const patterns = Array.isArray(detectPatterns(candles)) ? detectPatterns(candles) : [];
+
+  // ── 2. ATR + волатильность ──
+  const ATR_PERIOD = 14;
+  let atr = null;
+  let atrAvg100 = null;
+  let volatilityOK = true;
+  if (candles.length >= ATR_PERIOD + 2) {
+    const trs = [];
+    for (let i = 1; i < candles.length; i++) {
+      const high  = candles[i].high;
+      const low   = candles[i].low;
+      const prevC = candles[i - 1].close;
+      trs.push(Math.max(high - low, Math.abs(high - prevC), Math.abs(low - prevC)));
+    }
+    if (trs.length >= ATR_PERIOD) {
+      let atrVal = trs.slice(0, ATR_PERIOD).reduce((a, b) => a + b, 0) / ATR_PERIOD;
+      const atrs = [atrVal];
+      for (let i = ATR_PERIOD; i < trs.length; i++) {
+        atrVal = (atrVal * (ATR_PERIOD - 1) + trs[i]) / ATR_PERIOD;
+        atrs.push(atrVal);
+      }
+      atr = atrs[atrs.length - 1];
+      const historyLen = Math.min(100, atrs.length - 1);
+      if (historyLen > 0) {
+        const histSlice = atrs.slice(atrs.length - 1 - historyLen, atrs.length - 1);
+        atrAvg100 = histSlice.reduce((a, b) => a + b, 0) / historyLen;
+        volatilityOK = atr >= atrAvg100;
+      } else {
+        atrAvg100 = atr;
+      }
+    }
+  }
+  if (atr === null) {
+    // fallback: только текущее ATR без истории — значит, фильтр волатильности не жёсткий
+    atr = calcATR(candles, ATR_PERIOD);
+    atrAvg100 = atr;
+    volatilityOK = true;
+  }
+
+  // ── 3. Фибо по последним 50 свечам ──
+  const fib = calcFibonacciLevels(candles);
+  let fibRatio = null;
+  let fibRatioPrev = null;
+  let fibZoneOk = false;   // true, если ТЕКУЩАЯ цена внутри 0.5–0.618 (для отображения)
+  let fibZonePrev = false; // true, если ПРЕДЫДУЩАЯ свеча закрылась в зоне 0.5–0.618
+
+  if (fib && fib.high !== fib.low) {
+    const range = fib.high - fib.low;
+    if (range > 0) {
+      // Текущая свеча
+      fibRatio = (price - fib.low) / range;
+      if (fibRatio >= 0.5 && fibRatio <= 0.618) {
+        fibZoneOk = true;
+      }
+
+      // Предыдущая свеча (для логики "касания зоны")
+      if (candles.length >= 2) {
+        const prevClose = candles[candles.length - 2].close;
+        fibRatioPrev = (prevClose - fib.low) / range;
+        if (fibRatioPrev >= 0.5 && fibRatioPrev <= 0.618) {
+          fibZonePrev = true;
+        }
+      }
+    }
+  }
+
+  // ── 4. HTF‑данные как фактор (но ещё НЕ фильтр) ──
+  let htfScore = 0;
+  let htfTrend = 0;  // +1 = bullish HTF, -1 = bearish, 0 = neutral
+  let htfFilterActive = false;
+  let htfFilterNote = '';
+  let htfText = '—';
+
+  if (htfData) {
+    if (htfData.ema) {
+      if (htfData.ema.aboveAll) { htfScore += 1; htfTrend = 1; }
+      if (htfData.ema.belowAll) { htfScore -= 1; htfTrend = -1; }
+    }
+    if (htfData.rsi !== null && htfData.rsi !== undefined) {
+      if (htfData.rsi < 40) htfScore += 1;
+      if (htfData.rsi > 60) htfScore -= 1;
+    }
+    if (htfData.macd) {
+      if (htfData.macd.bullish)  htfScore += 0.5;
+      if (!htfData.macd.bullish) htfScore -= 0.5;
+    }
+    htfScore = Math.round(htfScore);
+    const trendLabel = htfData.ema ? htfData.ema.label : '—';
+    const htfRsi = (htfData.rsi !== null && htfData.rsi !== undefined) ? htfData.rsi.toFixed(1) : '—';
+    htfText  = `${htfData.tf} · ${trendLabel} · RSI ${htfRsi}`;
+  }
+
+  // ── 5. Считаем общий score из всех факторов ──
+  let score = 0;
+  const factors = [];
+
+  // RSI (±2)
+  if (rsi !== null && rsi !== undefined) {
+    if      (rsi < 25) { score += 2; factors.push({ tag:'RSI', text:`${rsi.toFixed(1)} — сильно перепродан`, color:'green', pts:+2 }); }
+    else if (rsi < 35) { score += 1; factors.push({ tag:'RSI', text:`${rsi.toFixed(1)} — перепродан`,        color:'green', pts:+1 }); }
+    else if (rsi > 75) { score -= 2; factors.push({ tag:'RSI', text:`${rsi.toFixed(1)} — сильно перекуплен`, color:'red',   pts:-2 }); }
+    else if (rsi > 65) { score -= 1; factors.push({ tag:'RSI', text:`${rsi.toFixed(1)} — перекуплен`,        color:'red',   pts:-1 }); }
+    else               { factors.push({ tag:'RSI', text:`${rsi.toFixed(1)} — нейтральный`,                   color:'muted', pts:0  }); }
+  }
+
+  // EMA (±2)
+  if (ema) {
+    if (ema.aboveAll && ema.golden) {
+      score += 2;
+      factors.push({ tag:'EMA', text:`Бычий тренд · цена выше EMA20/50/200`, color:'green', pts:+2 });
+    } else if (ema.aboveAll) {
+      score += 1;
+      factors.push({ tag:'EMA', text:`Цена выше EMA20 и EMA50`, color:'green', pts:+1 });
+    } else if (ema.belowAll && ema.death) {
+      score -= 2;
+      factors.push({ tag:'EMA', text:`Медвежий тренд · цена ниже EMA20/50/200`, color:'red', pts:-2 });
+    } else if (ema.belowAll) {
+      score -= 1;
+      factors.push({ tag:'EMA', text:`Цена ниже EMA20 и EMA50`, color:'red', pts:-1 });
+    } else {
+      factors.push({ tag:'EMA', text:`${ema.label} — смешанные сигналы`, color:'muted', pts:0 });
+    }
+  }
+
+  // MACD (±1, +1 за кросс)
+  if (macd) {
+    if (macd.crossBull)              { score += 2; factors.push({ tag:'MACD', text:`Бычье пересечение — смена импульса ↑`,    color:'green', pts:+2 }); }
+    else if (macd.crossBear)         { score -= 2; factors.push({ tag:'MACD', text:`Медвежье пересечение — смена импульса ↓`, color:'red',   pts:-2 }); }
+    else if (macd.bullish && macd.rising)  { score += 1; factors.push({ tag:'MACD', text:`Гистограмма растёт выше нуля`,       color:'green', pts:+1 }); }
+    else if (!macd.bullish && !macd.rising){ score -= 1; factors.push({ tag:'MACD', text:`Гистограмма падает ниже нуля`,       color:'red',   pts:-1 }); }
+    else                                    { factors.push({ tag:'MACD', text:`Нейтральный импульс`,                           color:'muted', pts:0  }); }
+  }
+
+  // S/R (до ±2)
+  const PROX = 3.0;
+  if (sr.nearestSupport || sr.nearestResistance) {
+    const dSup = sr.nearestSupport    ? distPct(price, sr.nearestSupport)    : 999;
+    const dRes = sr.nearestResistance ? distPct(price, sr.nearestResistance) : 999;
+    const atSup = sr.nearestSupport    && price > sr.nearestSupport    && dSup < PROX;
+    const atRes = sr.nearestResistance && price < sr.nearestResistance && dRes < PROX;
+    if (atSup) {
+      score += 2;
+      factors.push({ tag:'S/R', text:`У поддержки ${fmt(sr.nearestSupport)} (${dSup.toFixed(1)}%, ${sr.supTouches}x)`, color:'green', pts:+2 });
+    } else if (atRes) {
+      score -= 2;
+      factors.push({ tag:'S/R', text:`У сопротивления ${fmt(sr.nearestResistance)} (${dRes.toFixed(1)}%, ${sr.resTouches}x)`, color:'red', pts:-2 });
+    } else if (sr.nearestSupport && sr.nearestResistance) {
+      const ratio = dSup / (dSup + dRes);
+      if (ratio < 0.35) {
+        score += 1;
+        factors.push({ tag:'S/R', text:`Ближе к поддержке ${fmt(sr.nearestSupport)}`, color:'green', pts:+1 });
+      } else if (ratio > 0.65) {
+        score -= 1;
+        factors.push({ tag:'S/R', text:`Ближе к сопротивлению ${fmt(sr.nearestResistance)}`, color:'red', pts:-1 });
+      } else {
+        factors.push({ tag:'S/R', text:`Между уровнями S:${fmt(sr.nearestSupport)} R:${fmt(sr.nearestResistance)}`, color:'muted', pts:0 });
+      }
+    }
+  }
+
+  // Volume (±1)
+  if (vol && vol.ratio !== null && vol.ratio !== undefined) {
+    if (vol.spike) {
+      if (vol.bullish) {
+        score += 1;
+        factors.push({ tag:'VOL', text:`×${vol.ratio.toFixed(1)} — бычий всплеск объёма`, color:'green', pts:+1 });
+      } else {
+        score -= 1;
+        factors.push({ tag:'VOL', text:`×${vol.ratio.toFixed(1)} — медвежий всплеск объёма`, color:'red', pts:-1 });
+      }
+    } else {
+      factors.push({ tag:'VOL', text:`×${vol.ratio.toFixed(2)} — норма`, color:'muted', pts:0 });
+    }
+  }
+
+  // Patterns (±1 за сильный, максимум ±2)
+  let patScore = 0;
+  for (const p of patterns) {
+    if (p.bull === true  && patScore < 2)  { patScore += 1; score += 1; }
+    if (p.bull === false && patScore > -2) { patScore -= 1; score -= 1; }
+  }
+  if (patterns.length > 0) {
+    const display  = patterns.slice(0, 2);
+    const col = patScore > 0 ? 'green' : patScore < 0 ? 'red' : 'muted';
+    factors.push({
+      tag:'PAT',
+      text: display.map(p=>p.name).join(' · ') + (patterns.length > 2 ? ` +${patterns.length-2}` : ''),
+      color: col,
+      pts: patScore
+    });
+  }
+
+  // HTF‑score как бонус/штраф (±2) — БЕЗ фильтрации
+  if (htfData) {
+    if (htfScore !== 0) {
+      score += htfScore;
+      const col = htfScore > 0 ? 'green' : htfScore < 0 ? 'red' : 'muted';
+      factors.push({ tag:'HTF', text: htfText, color: col, pts: htfScore });
+    }
+  }
+
+  // Описание Fibo (pts=0)
+  if (fib && fibRatio !== null) {
+    const posPct = (fibRatio * 100).toFixed(1);
+    const inZone = fibZoneOk;
+    factors.push({
+      tag: 'FIBO',
+      text: inZone
+        ? `Цена в золотой зоне 0.5–0.618 (${posPct}%)`
+        : `Цена вне зоны интереса 0.5–0.618 (${posPct}%)`,
+      color: inZone ? 'green' : 'yellow',
+      pts: 0
+    });
+  }
+
+  // Описание волатильности (pts=0)
+  if (atr !== null && atrAvg100 !== null && price) {
+    const atrPctCur = (atr / price * 100);
+    const atrPctAvg = (atrAvg100 / price * 100);
+    if (!isNaN(atrPctCur) && !isNaN(atrPctAvg)) {
+      if (volatilityOK) {
+        factors.push({
+          tag: 'VOLAT',
+          text: `ATR ${atrPctCur.toFixed(2)}% ≥ средн. ${atrPctAvg.toFixed(2)}% · рынок активен`,
+          color: 'green',
+          pts: 0
+        });
+      } else {
+        factors.push({
+          tag: 'VOLAT',
+          text: `ATR ${atrPctCur.toFixed(2)}% < средн. ${atrPctAvg.toFixed(2)}% · рынок спит`,
+          color: 'yellow',
+          pts: 0
+        });
+      }
+    }
+  }
+
+  // ── 6. Базовое направление по score + гистерезис ──
+  const SCOREMAX = 7;
+  const hysteresisState = applyHysteresis(score);
+  let signal = 'НЕЙТРАЛЬНО';
+  let signalClass = 'neutral';
+  let baseDir = null; // 'buy' or 'sell'
+
+  if (hysteresisState === 'buy') {
+    baseDir = 'buy';
+    signal = score >= THRESHOLD_STRONG_BUY ? 'STRONG BUY' : 'BUY';
+    signalClass = 'buy';
+  } else if (hysteresisState === 'sell') {
+    baseDir = 'sell';
+    signal = score <= -THRESHOLD_STRONG_BUY ? 'STRONG SELL' : 'SELL';
+    signalClass = 'sell';
+  } else {
+    if (score >= 1)      signal = 'WAIT BUY';
+    else if (score <= -1)signal = 'WAIT SELL';
+    signalClass = 'neutral';
+  }
+
+  // ── 7. ФИЛЬТРЫ: HTF‑тренд → волатильность → Fibo → жёсткий порог Score ──
+
+  // HTF‑фильтр: запрет против тренда старшего ТФ
+  if (baseDir && htfData && htfTrend !== 0) {
+    if (baseDir === 'buy' && htfTrend === -1) {
+      htfFilterActive = true;
+      htfFilterNote = `HTF ${htfData.tf} медвежий — BUY заблокирован, ждём откат`;
+      signal = 'WAIT BUY · HTF';
+      signalClass = 'neutral';
+      factors.push({ tag:'FILTER', text: htfFilterNote, color:'yellow', pts:0 });
+      baseDir = null;
+    } else if (baseDir === 'sell' && htfTrend === 1) {
+      htfFilterActive = true;
+      htfFilterNote = `HTF ${htfData.tf} бычий — SELL заблокирован, ждём откат`;
+      signal = 'WAIT SELL · HTF';
+      signalClass = 'neutral';
+      factors.push({ tag:'FILTER', text: htfFilterNote, color:'yellow', pts:0 });
+      baseDir = null;
+    }
+  }
+
+  // Фильтр по волатильности (ATR)
+  if (baseDir && !volatilityOK && atr !== null && atrAvg100 !== null) {
+    if (baseDir === 'buy') {
+      signal = 'WAIT BUY · NO VOLATILITY';
+    } else {
+      signal = 'WAIT SELL · NO VOLATILITY';
+    }
+    signalClass = 'neutral';
+    factors.push({ tag:'FILTER', text:'ATR ниже среднего за 100 свечей — рынок спит, сделки запрещены', color:'yellow', pts:0 });
+    baseDir = null;
+  }
+
+  // Фильтр и подтверждение по Fibo:
+  // 1) сначала цена должна КОСНУТЬСЯ зоны 0.5–0.618 (fibZonePrev === true),
+  // 2) затем следующая свеча должна закрыться с ИМПУЛЬСОМ в сторону сделки,
+  //    причём:
+  //      • для LONG — закрытие ВЫШЕ уровня 0.5
+  //      • для SHORT — закрытие НИЖЕ уровня 0.5
+  //    и тело свечи > средней величины тела за последние 5 свечей.
+  if (baseDir && fib && fibRatio !== null && candles.length >= 6) {
+    const lastIdx   = candles.length - 1;
+    const cur       = candles[lastIdx];
+    const prev      = candles[lastIdx - 1];
+
+    // Средний размер тела за последние 5 закрытых свечей (без текущей)
+    const bodyWindow = candles.slice(lastIdx - 5, lastIdx);
+    const avgBody = bodyWindow.reduce((sum, c) => sum + Math.abs(c.close - c.open), 0) / bodyWindow.length;
+    const curBody = Math.abs(cur.close - cur.open);
+
+    const isImpulseUp   = cur.close > cur.open && curBody > avgBody;
+    const isImpulseDown = cur.close < cur.open && curBody > avgBody;
+
+    const above0500 = cur.close > fib.level0500;
+    const below0500 = cur.close < fib.level0500;
+
+    let confirmed = false;
+
+    if (baseDir === 'buy') {
+      // LONG: предыдущая свеча коснулась зоны 0.5–0.618, текущая — импульсно выше 0.5 в бычьем направлении
+      if (fibZonePrev && above0500 && isImpulseUp) {
+        confirmed = true;
+      }
+    } else if (baseDir === 'sell') {
+      // SHORT: предыдущая свеча коснулась зоны 0.5–0.618, текущая — импульсно ниже 0.5 в медвежьем направлении
+      if (fibZonePrev && below0500 && isImpulseDown) {
+        confirmed = true;
+      }
+    }
+
+    if (!confirmed) {
+      if (baseDir === 'buy') {
+        signal = 'WAIT BUY · FIBO CONFIRM';
+      } else if (baseDir === 'sell') {
+        signal = 'WAIT SELL · FIBO CONFIRM';
+      }
+      signalClass = 'neutral';
+      factors.push({
+        tag: 'CONFIRM',
+        text: 'Ожидание подтверждения от Fibo: сначала касание зоны 0.5–0.618, затем импульсная свеча в сторону сделки (тело > средней за 5 свечей)',
+        color: 'yellow',
+        pts: 0
+      });
+      baseDir = null;
+    }
+  }
+
+  // Жёсткий порог Score (снайперский)
+  if (baseDir === 'buy' && score < 5) {
+    signal = 'WAIT BUY · SCORE<5';
+    signalClass = 'neutral';
+    factors.push({ tag:'FILTER', text:'Score < 5 — ждём идеального совпадения факторов', color:'yellow', pts:0 });
+    baseDir = null;
+  } else if (baseDir === 'sell' && score > -5) {
+    signal = 'WAIT SELL · SCORE>-5';
+    signalClass = 'neutral';
+    factors.push({ tag:'FILTER', text:'Score > -5 — ждём идеального совпадения факторов', color:'yellow', pts:0 });
+    baseDir = null;
+  }
+
+  // ── 8. SL/TP‑план на основе итогового score и ATR ──
+  _lastAtrForPlan = atr;
+  const sltp = getTradePlan(score, sr, price, price);
+
+  return {
+    score,
+    SCOREMAX,
+    signal,
+    signalClass,
+    rsi,
+    macd,
+    ema,
+    atr,
+    atrAvg100,
+    volatilityOK,
+    fib,
+    fibRatio,
+    fibZoneOk,
+    sr,
+    vol,
+    patterns,
+    factors,
+    sltp,
+    htfScore,
+    htfData,
+    htfTrend,
+    htfFilterActive,
+    htfFilterNote
+  };
+}
+
+// ── TRIGGER-AWARE ОБЁРТКА: calcCompositeSignal ──
+// Делает сигналы событийными (импульсные триггеры + cooldown)
+function calcCompositeSignal(candles, htfData, triggerKey) {
+  const base = getCompositeScore(candles, htfData);
+  if (!base) return null;
+
+  const now   = Date.now();
+  const key   = triggerKey || 'DEFAULT';
+  const price = candles[candles.length - 1].close;
+
+  let state = triggerStateMap[key] || {
+    previousScore: null,
+    lastTriggeredTime: null,
+    status: 'WAITING',          // 'WAITING' | 'TRIGGERED'
+    entryPrice: null,
+    atrAtTrigger: null,
+    sltpAtTrigger: null,
+  };
+
+  const prevScore = state.previousScore;
+  const curScore  = base.score;
+  let   lastTriggeredTime = state.lastTriggeredTime;
+  let   status            = state.status;
+  let   entryPrice        = state.entryPrice;
+  let   atrAtTrigger      = state.atrAtTrigger;
+  let   sltpAtTrigger     = state.sltpAtTrigger;
+
+  // Cooldown: не перетриггерим один и тот же инструмент чаще, чем раз в 30 минут
+  const inCooldown = lastTriggeredTime && (now - lastTriggeredTime < TRIGGER_COOLDOWN_MS);
+
+  // Направление по целевым порогам
+  let dir = null; // 'buy' | 'sell'
+  if (curScore >= TRIGGER_BUY_MIN_SCORE) dir = 'buy';
+  else if (curScore <= TRIGGER_SELL_MIN_SCORE) dir = 'sell';
+
+  // Резкий импульс по score
+  let triggeredNow = false;
+  if (!inCooldown && dir && prevScore !== null && prevScore !== undefined) {
+    if (dir === 'buy') {
+      // Для BUY: текущий score стал как минимум на 3 пункта ВЫШЕ предыдущего
+      if (curScore - prevScore >= TRIGGER_DELTA_SCORE && curScore >= TRIGGER_BUY_MIN_SCORE) {
+        triggeredNow = true;
+      }
+    } else if (dir === 'sell') {
+      // Для SELL: текущий score ушёл как минимум на 3 пункта НИЖЕ предыдущего
+      if (prevScore - curScore >= TRIGGER_DELTA_SCORE && curScore <= TRIGGER_SELL_MIN_SCORE) {
+        triggeredNow = true;
+      }
+    }
+  }
+
+  // Если триггер сработал — фиксируем "зону входа"
+  if (triggeredNow) {
+    status            = 'TRIGGERED';
+    lastTriggeredTime = now;
+    entryPrice        = price;
+    atrAtTrigger      = base.atr || null;
+    sltpAtTrigger     = base.sltp || null;
+  }
+
+  // Фильтр "остывания зоны": если цена ушла дальше, чем ATR от entryPrice — зона сбрасывается
+  if (status === 'TRIGGERED' && entryPrice != null && atrAtTrigger != null) {
+    const upper = entryPrice + atrAtTrigger;
+    const lower = entryPrice - atrAtTrigger;
+    if (price > upper || price < lower) {
+      status        = 'WAITING';
+      entryPrice    = null;
+      atrAtTrigger  = null;
+      sltpAtTrigger = null;
+    }
+  }
+
+  // Обновляем хранилище состояния для ключа
+  triggerStateMap[key] = {
+    previousScore: curScore,
+    lastTriggeredTime,
+    status,
+    entryPrice,
+    atrAtTrigger,
+    sltpAtTrigger,
+  };
+
+  // UI‑статусы
+  let uiSignalText  = 'WAITING FOR SETUP';
+  let uiSignalClass = 'neutral';
+  if (status === 'TRIGGERED' && dir === 'buy') {
+    uiSignalText  = '⚡ TRIGGERED: ENTRY ZONE (LONG)';
+    uiSignalClass = 'buy';
+  } else if (status === 'TRIGGERED' && dir === 'sell') {
+    uiSignalText  = '⚡ TRIGGERED: ENTRY ZONE (SHORT)';
+    uiSignalClass = 'sell';
+  }
+
+  // ── TELEGRAM ALERT ──
+  if (status === 'TRIGGERED' && dir && canSendAlert(key)) {
+    const alertSymbol = key.split('|')[0] || key;
+    const alertPrice = fmt(price);
+    const alertScore = `${base.score}/${base.SCOREMAX}`;
+    const alertSL = base.sltp && base.sltp.sl ? fmt(base.sltp.sl) : '—';
+    const alertTPs = base.sltp && base.sltp.tps ? base.sltp.tps.map(t => fmt(t)).join(', ') : '—';
+    const alertMsg = `⚡️ СИГНАЛ: ${alertSymbol}\n💰 Цена: ${alertPrice}\n📊 Сила: ${alertScore}\n📉 СЛ/ТП: ${alertSL} / ${alertTPs}`;
+    sendTelegramAlert(alertMsg);
+  }
+
+  // В режиме Охоты:
+  // - счёт (score) и факторы остаются как есть
+  // - НО "сигнал" для UI и радаров теперь событийный, а не статичный
+  const sig = {
+    ...base,
+    signal: uiSignalText,
+    signalClass: uiSignalClass,
+    triggerStatusRaw: status,
+    triggerKey: key,
+    triggerInCooldown: !!inCooldown,
+    triggerEntryPrice: entryPrice,
+    triggerAtr: atrAtTrigger,
+    triggerSLTP: sltpAtTrigger,
+  };
+
+  return sig;
+}
+
+// ═══════════════════════════════════════════════
+// ── RENDER ──
+// ═══════════════════════════════════════════════
+function fmt(n) {
+  if (!n && n !== 0) return '—';
+  if (n >= 1000) return '$' + n.toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
+  if (n >= 1)    return '$' + n.toFixed(4);
+  return '$' + n.toFixed(6);
+}
+
+function renderAnalysisPanel(sig, candles) {
+  const panel = document.getElementById('analysis-panel');
+  if (!sig) { panel.innerHTML = ''; return; }
+
+  const price   = candles[candles.length-1].close;
+  const dotColor= sig.signalClass==='buy' ? '#0ecb81' : sig.signalClass==='sell' ? '#f6465d' : '#848e9c';
+  const isTriggered = sig.triggerStatusRaw === 'TRIGGERED';
+  const isWaitingSetup = !isTriggered;
+  const signalDisplayColor = isTriggered
+    ? (sig.signalClass==='buy' ? 'var(--green)' : sig.signalClass==='sell' ? 'var(--red)' : 'var(--muted)')
+    : 'var(--muted)';
+  const scoreColor = sig.score > 0 ? 'var(--green)' : sig.score < 0 ? 'var(--red)' : 'var(--muted)';
+  const scorePct   = ((sig.score + sig.SCOREMAX) / (sig.SCOREMAX * 2) * 100).toFixed(1);
+
+  // RSI
+  const rsiStr   = sig.rsi !== null ? sig.rsi.toFixed(1) : '—';
+  const rsiColor = sig.rsi < 35 ? 'var(--green)' : sig.rsi > 65 ? 'var(--red)' : 'var(--muted)';
+
+  // EMA
+  const emaLabel = sig.ema ? sig.ema.label : '—';
+  const emaColor = sig.ema ? (sig.ema.aboveAll ? 'var(--green)' : sig.ema.belowAll ? 'var(--red)' : 'var(--muted)') : 'var(--muted)';
+  const emaE20   = sig.ema && sig.ema.e20  ? fmt(sig.ema.e20)  : '—';
+
+  // MACD
+  const macdLabel = sig.macd ? (sig.macd.crossBull ? '⚡ Бычий крест' : sig.macd.crossBear ? '⚡ Медвежий крест' : sig.macd.bullish ? 'Выше нуля' : 'Ниже нуля') : '—';
+  const macdColor = sig.macd ? (sig.macd.bullish ? 'var(--green)' : 'var(--red)') : 'var(--muted)';
+
+  // S/R
+  const srSup  = sig.sr.nearestSupport    ? fmt(sig.sr.nearestSupport)    : '—';
+  const srRes  = sig.sr.nearestResistance ? fmt(sig.sr.nearestResistance) : '—';
+  const supDist= sig.sr.nearestSupport    ? distPct(price,sig.sr.nearestSupport).toFixed(1)+'%'    : '—';
+  const resDist= sig.sr.nearestResistance ? distPct(price,sig.sr.nearestResistance).toFixed(1)+'%' : '—';
+
+  // Volume
+  const volStr   = sig.vol.ratio !== null ? `×${sig.vol.ratio.toFixed(2)}` : '—';
+  const volColor = sig.vol.spike ? (sig.vol.bullish ? 'var(--green)' : 'var(--red)') : 'var(--muted)';
+  const volLabel = sig.vol.spike ? (sig.vol.bullish ? 'Бычий' : 'Медвежий') : 'Норма';
+
+  // HTF
+  const htfLabel = sig.htfData ? `${sig.htfData.tf} · ${sig.htfData.ema ? sig.htfData.ema.label : '—'}` : '—';
+  const htfColor = sig.htfScore > 0 ? 'var(--green)' : sig.htfScore < 0 ? 'var(--red)' : 'var(--muted)';
+
+  // Fibo levels for display (0.5–0.618 zone)
+  let fibLabelMain = '—';
+  let fibLabelSub  = 'нет данных';
+  let fibColor     = 'var(--muted)';
+  if (sig.fib) {
+    const l50  = sig.fib.level0500;
+    const l618 = sig.fib.level0618;
+    fibLabelMain = `${fmt(l50)} – ${fmt(l618)}`;
+    if (sig.fibRatio != null) {
+      const posPct = (sig.fibRatio * 100).toFixed(1) + '%';
+      if (sig.fibZoneOk) {
+        fibLabelSub = `Цена в зоне (${posPct})`;
+        fibColor = 'var(--green)';
+      } else {
+        fibLabelSub = `Вне зоны (${posPct})`;
+        fibColor = 'var(--yellow)';
+      }
+    } else {
+      fibLabelSub = 'Диапазон определён';
+    }
+  }
+
+  // ATR current vs average for 100 candles
+  const atrValStr = sig.atr ? fmt(sig.atr) : '—';
+  let atrSubStr = '—';
+  if (sig.atr && sig.atrAvg100) {
+    const atrPctCur = (sig.atr / price * 100).toFixed(2);
+    const atrPctAvg = (sig.atrAvg100 / price * 100).toFixed(2);
+    const volWord   = sig.volatilityOK ? 'волатилен' : 'спокоен';
+    atrSubStr = `${atrPctCur}% vs ${atrPctAvg}% · рынок ${volWord}`;
+  } else if (sig.atr) {
+    atrSubStr = (sig.atr / price * 100).toFixed(2) + '% волат.';
+  }
+
+  // Управление FAST-кнопками в калькуляторе:
+  // только когда TRIGGER активен и RR-план валиден
+  try {
+    const fastBox = document.getElementById('fast-buttons');
+    if (fastBox) {
+      const ok = sig.triggerStatusRaw === 'TRIGGERED'
+        && sig.sltp
+        && sig.sltp.isValidRR !== false;
+      fastBox.style.display = ok ? 'grid' : 'none';
+    }
+  } catch {}
+
+  // Patterns
+  const patsHTML = sig.patterns.length > 0
+    ? sig.patterns.slice(0,4).map(p => {
+        const bg = p.bull === true ? 'rgba(14,203,129,.12)' : p.bull === false ? 'rgba(246,70,93,.12)' : 'rgba(132,142,156,.1)';
+        const cl = p.bull === true ? 'var(--green)' : p.bull === false ? 'var(--red)' : 'var(--muted)';
+        const br = p.bull === true ? 'rgba(14,203,129,.3)' : p.bull === false ? 'rgba(246,70,93,.3)' : 'var(--border)';
+        return `<span class="ap-pattern-badge" style="background:${bg};color:${cl};border:1px solid ${br};">${p.name}</span>`;
+      }).join('')
+    : '<span style="font-size:9px;color:var(--muted);">Нет паттернов</span>';
+
+  // Factors
+  const factorsHTML = sig.factors.map(f => {
+    const c = f.color==='green'?'var(--green)':f.color==='red'?'var(--red)':'var(--border)';
+    const s = f.pts>0?`+${f.pts}`:f.pts<0?`${f.pts}`:'±0';
+    return `<div class="ap-factor-row">
+      <span class="ap-factor-tag">${f.tag}</span>
+      <span class="ap-factor-text" style="color:${c};">${f.text}</span>
+      <span class="ap-factor-pts" style="color:${c};">${s}</span>
+    </div>`;
+  }).join('');
+
+  // SL/TP — динамический рендер по массиву ТП
+  let sltpHTML = '';
+  // SL/TP‑план показываем только в режиме TRIGGERED
+  const st = sig.triggerStatusRaw === 'TRIGGERED' ? sig.sltp : null;
+  if (st && Array.isArray(st.tps) && st.tps.length > 0) {
+    const basePrice = price;
+    const firstTp   = st.tps[0];
+    const isBull    = firstTp > basePrice;
+    const dir       = isBull ? 'LONG 📈' : 'SHORT 📉';
+    const dirC      = isBull ? 'var(--green)' : 'var(--red)';
+
+    const tpCards = st.tps.map((tp, idx) => {
+      const tpPct = distPct(basePrice, tp).toFixed(1);
+      const rrVal = st.rr && st.rr[idx] != null ? st.rr[idx] : '';
+      const rrNum = parseFloat(rrVal);
+      const rrColor = !isNaN(rrNum)
+        ? (rrNum >= 2 ? 'var(--green)' : rrNum >= 1 ? 'var(--yellow)' : 'var(--red)')
+        : 'var(--muted)';
+
+      const label       = `ТЕЙК-ПРОФИТ ${idx + 1}`;
+      const cardBg      = idx === 0 ? 'rgba(14,203,129,.07)' : 'rgba(108,127,255,.07)';
+      const cardBorder  = idx === 0 ? 'rgba(14,203,129,.25)' : 'rgba(108,127,255,.25)';
+      const priceColor  = idx === 0 ? 'var(--green)' : 'var(--accent)';
+
+      return `
+        <div class="sltp-card" style="background:${cardBg};border:1px solid ${cardBorder};">
+          <div class="sltp-card-label" style="color:${priceColor};">${label}</div>
+          <div class="sltp-card-price" style="color:${priceColor};">${fmt(tp)}</div>
+          <div class="sltp-card-pct" style="color:var(--muted);">+${tpPct}%</div>
+          <div class="sltp-card-rr" style="color:${rrColor};">${rrVal ? `RR ${rrVal}:1` : ''}</div>
+        </div>`;
+    }).join('');
+
+    const rrBanner = st.isValidRR === false
+      ? `<div style="margin-top:4px;margin-bottom:4px;padding:4px 6px;border-radius:4px;background:rgba(246,70,93,0.08);border:1px solid rgba(246,70,93,0.4);font-size:9px;color:var(--red);">
+           ⚠️ СИГНАЛ ОТКЛОНЕН: RR &lt; 1:2 (потенциал мал)
+         </div>`
+      : '';
+
+    sltpHTML = `
+    <div class="ap-sltp">
+      <div class="ap-sltp-header">
+        <span>ТОРГОВЫЙ ПЛАН · <span style="color:${dirC};font-weight:700;">${dir}</span></span>
+        <span>вход ~${fmt(price)}</span>
+      </div>
+      ${rrBanner}
+      <div class="ap-sltp-grid" style="grid-template-columns:repeat(${1 + st.tps.length}, 1fr);">
+        <div class="sltp-card" style="background:rgba(246,70,93,.07);border:1px solid rgba(246,70,93,.25);">
+          <div class="sltp-card-label" style="color:var(--red);">СТОП-ЛОСС</div>
+          <div class="sltp-card-price" style="color:var(--red);">${fmt(st.sl)}</div>
+          <div class="sltp-card-pct" style="color:var(--muted);">−${st.slPct.toFixed(1)}%</div>
+          <div class="sltp-card-rr" style="color:#444;line-height:1.4;">${st.slNote}</div>
+        </div>
+        ${tpCards}
+      </div>
+      <div class="ap-disclaimer">⚠ Только информация. Управляйте рисками самостоятельно.</div>
+    </div>`;
+  }
+
+  panel.innerHTML = `
+    <div class="ap-top">
+      <div class="ap-signal-box">
+        <div class="ap-signal-label">ОХОТА · TRIGGER LOGIC</div>
+        <div class="ap-signal-main">
+          <div class="ap-signal-dot" style="background:${dotColor};box-shadow:0 0 8px ${dotColor};"></div>
+          <span style="color:${signalDisplayColor};">${sig.signal}</span>
+        </div>
+        <div class="ap-signal-sub">Счёт: ${sig.score>0?'+':''}${sig.score} / ±${sig.SCOREMAX}</div>
+      </div>
+      <div class="ap-htf-box">
+        <div class="ap-signal-label">СТАРШИЙ ТФ${sig.htfFilterActive?' 🚫':''}</div>
+        <div style="font-size:11px;font-weight:600;color:${htfColor};margin-top:3px;">${htfLabel}</div>
+        <div class="ap-signal-sub" style="margin-top:2px;${sig.htfFilterActive?'color:var(--yellow);':''}">${sig.htfFilterActive?'ФИЛЬТР ТРЕНДА':sig.htfData&&sig.htfData.rsi?'RSI '+sig.htfData.rsi.toFixed(1):'—'}</div>
+      </div>
+      <div class="ap-score-wrap">
+        <div class="ap-score-label">СИЛА СИГНАЛА (${sig.factors.length} факторов)</div>
+        <div class="ap-score-bar"><div class="ap-score-fill" style="width:${scorePct}%;background:${scoreColor};"></div></div>
+        <div style="display:flex;gap:8px;margin-top:4px;flex-wrap:wrap;">
+          ${sig.factors.map(f=>{const c=f.color==='green'?'var(--green)':f.color==='red'?'var(--red)':'var(--border)';return`<span style="font-size:8px;color:${c};letter-spacing:1px;">${f.tag}${f.pts>0?'↑':f.pts<0?'↓':'·'}</span>`;}).join('')}
+        </div>
+      </div>
+    </div>
+    <div class="ap-metrics">
+      <div class="ap-metric">
+        <div class="ap-metric-label">RSI·14</div>
+        <div class="ap-metric-val" style="color:${rsiColor};">${rsiStr}</div>
+        <div class="ap-metric-sub">${sig.rsi<30?'Перепродан':sig.rsi>70?'Перекуплен':'Нейтрально'}</div>
+      </div>
+      <div class="ap-metric">
+        <div class="ap-metric-label">EMA·ТРЕНД</div>
+        <div class="ap-metric-val" style="color:${emaColor};font-size:10px;">${emaLabel}</div>
+        <div class="ap-metric-sub">EMA20: ${emaE20}</div>
+      </div>
+      <div class="ap-metric">
+        <div class="ap-metric-label">MACD</div>
+        <div class="ap-metric-val" style="color:${macdColor};font-size:10px;">${macdLabel}</div>
+        <div class="ap-metric-sub">${sig.macd?`hist: ${sig.macd.hist.toFixed(4)}`:'—'}</div>
+      </div>
+      <div class="ap-metric">
+        <div class="ap-metric-label">ПОДДЕРЖКА</div>
+        <div class="ap-metric-val" style="color:var(--green);font-size:10px;">${srSup}</div>
+        <div class="ap-metric-sub">${supDist} · ${sig.sr.supTouches}x</div>
+      </div>
+      <div class="ap-metric">
+        <div class="ap-metric-label">СОПРОТИВЛ.</div>
+        <div class="ap-metric-val" style="color:var(--red);font-size:10px;">${srRes}</div>
+        <div class="ap-metric-sub">${resDist} · ${sig.sr.resTouches}x</div>
+      </div>
+      <div class="ap-metric">
+        <div class="ap-metric-label">ATR·14</div>
+        <div class="ap-metric-val" style="color:var(--accent2);font-size:10px;">${atrValStr}</div>
+        <div class="ap-metric-sub">${atrSubStr}</div>
+      </div>
+      <div class="ap-metric">
+        <div class="ap-metric-label">FIBO·0.5–0.618</div>
+        <div class="ap-metric-val" style="color:${fibColor};font-size:10px;">${fibLabelMain}</div>
+        <div class="ap-metric-sub">${fibLabelSub}</div>
+      </div>
+    </div>
+    <div class="ap-patterns">
+      <span class="ap-pat-label">ПАТТЕРНЫ</span>${patsHTML}
+      <span style="margin-left:auto;font-size:9px;color:var(--muted);">VOL <span style="color:${volColor};">${volStr} ${volLabel}</span></span>
+    </div>
+    <div class="ap-factors">${factorsHTML}</div>
+    ${sltpHTML}
+  `;
+}
+
+// ═══════════════════════════════════════════════
+// LOAD CHART  (full history load + launches auto-update loop)
+// ═══════════════════════════════════════════════
+let chartTimer   = null;   // auto-update interval handle
+let currentSymbol = null;  // tracks which symbol/tf is live
+let currentTf     = null;
+let _autoUpdateRunning = false; // guard: only one tick at a time
+let _lastCandles  = null;       // cached candle array for tick updates
+
+function stopAutoUpdate() {
+  if (chartTimer) { clearInterval(chartTimer); chartTimer = null; }
+  _autoUpdateRunning = false;
+}
+
+// lightweight tick: fetch last 2 candles → update chart + PnL + SL/TP check
+async function autoUpdateTick() {
+  if (_autoUpdateRunning) return;          // skip if previous tick still running
+  _autoUpdateRunning = true;
+  try {
+    const sym = currentSymbol;
+    const tf  = currentTf;
+    if (!sym || !tf || !candleSeries) return;
+
+    const raw = await fetchWithProxy(`${API_BASE}?symbol=${sym}&interval=${tf}&limit=2`);
+    if (!Array.isArray(raw) || !raw.length) return;
+
+    const latest = raw[raw.length - 1];
+    const currentPrice = parseFloat(latest[4]); // close of last candle
+    const tickCandle = {
+      time:  Math.floor(parseInt(latest[0]) / 1000) + UTC_OFFSET_SEC,
+      open:  parseFloat(latest[1]),
+      high:  parseFloat(latest[2]),
+      low:   parseFloat(latest[3]),
+      close: currentPrice,
+    };
+
+    // Update last candle on chart (creates new bar if time differs)
+    try { candleSeries.update(tickCandle); } catch {}
+
+    // Update EMA last point (lightweight: only update last value)
+    if (_lastCandles && _lastCandles.length > 0 && emaSeries20) {
+      // splice latest candle data into our cache for correct EMA tail
+      const patchedCloses = _lastCandles.map(c => c.close);
+      patchedCloses[patchedCloses.length - 1] = currentPrice;
+      const e20arr = calcEMAArray(patchedCloses, 20);
+      const e50arr = calcEMAArray(patchedCloses, 50);
+      const e200arr= calcEMAArray(patchedCloses, 200);
+      const li = _lastCandles.length - 1;
+      if (e20arr[li]  !== null) try { emaSeries20.update( { time: tickCandle.time, value: e20arr[li]  }); } catch {}
+      if (e50arr[li]  !== null) try { emaSeries50.update( { time: tickCandle.time, value: e50arr[li]  }); } catch {}
+      if (e200arr[li] !== null) try { emaSeries200.update({ time: tickCandle.time, value: e200arr[li] }); } catch {}
+    }
+    
+    // Update header price
+    lastKnownPrice = currentPrice;
+    document.getElementById('header-price').textContent = fmt(currentPrice);
+    const entryEl = document.getElementById('c-entry');
+    if (entryEl && document.activeElement !== entryEl)
+      entryEl.value = currentPrice.toFixed(priceDecimals(currentPrice));
+
+    // ── Обновление визуальных уровней (Fibo + S/R) ──
+    if (_lastCandles && _lastCandles.length > 35) {
+      clearVisuals();
+      try {
+        const fib = calcFibonacciLevels(_lastCandles);
+        if (fib) drawFiboLevels(fib, currentPrice);
+      } catch(e) { /* silent */ }
+      try {
+        const sr = calcSupportResistance(_lastCandles);
+        if (sr) drawSupportResistance(sr);
+      } catch(e) { /* silent */ }
+    }
+
+    // ── Active trade: update PnL and check SL/TP ──
+    if (activeTrade) {
+      // Only monitor the active trade's symbol regardless of what chart shows
+      let monPrice = currentPrice;
+      if (activeTrade.symbol !== sym) {
+        // chart showing different symbol — fetch trade symbol price separately
+        try {
+          const traw = await fetchWithProxy(`${API_BASE}?symbol=${activeTrade.symbol}&interval=1m&limit=1`);
+          if (Array.isArray(traw) && traw.length) monPrice = parseFloat(traw[0][4]);
+        } catch {}
+      }
+      updateActiveTradePnL(activeTrade, monPrice);
+      checkTradeConditions(monPrice);
+    }
+  } catch { /* silent — skip bad tick */ }
+  finally { _autoUpdateRunning = false; }
+}
+
+// ── SL/TP check (extracted from monitorTrade, called each tick) ──
+function checkTradeConditions(currentPrice) {
+  if (!activeTrade) return;
+  if (activeTrade.side === 'LONG'  && currentPrice <= activeTrade.stopLoss) { closeTrade('sl', currentPrice); return; }
+  if (activeTrade.side === 'SHORT' && currentPrice >= activeTrade.stopLoss) { closeTrade('sl', currentPrice); return; }
+  for (let i = 0; i < activeTrade.takeProfits.length; i++) {
+    if (activeTrade.hitTPs && activeTrade.hitTPs.includes(i)) continue;
+    const tp = activeTrade.takeProfits[i];
+    if (activeTrade.side === 'LONG'  && currentPrice >= tp) {
+      // TP hit logic with breakeven shift
+      if (i === 0 && !activeTrade.breakevenHit) {
+        activeTrade.stopLoss = activeTrade.entryPrice;
+        activeTrade.breakevenHit = true;
+        if (!activeTrade.hitTPs) activeTrade.hitTPs = [];
+        activeTrade.hitTPs.push(i);
+        drawTradeLines(activeTrade);
+        persistActiveTrade(activeTrade);
+        showToast('🛡️ Стоп перенесен в БУ');
+        continue;
+      }
+      closeTrade('tp', currentPrice); return;
+    }
+    if (activeTrade.side === 'SHORT' && currentPrice <= tp) {
+      if (i === 0 && !activeTrade.breakevenHit) {
+        activeTrade.stopLoss = activeTrade.entryPrice;
+        activeTrade.breakevenHit = true;
+        if (!activeTrade.hitTPs) activeTrade.hitTPs = [];
+        activeTrade.hitTPs.push(i);
+        drawTradeLines(activeTrade);
+        persistActiveTrade(activeTrade);
+        showToast('🛡️ Стоп перенесен в БУ');
+        continue;
+      }
+      closeTrade('tp', currentPrice); return;
+    }
+  }
+}
+
+function startAutoUpdate(sym, tf) {
+  stopAutoUpdate();
+  currentSymbol = sym;
+  currentTf     = tf;
+  autoUpdateTick(); // immediate first tick
+  chartTimer = setInterval(autoUpdateTick, 4000); // every 4 s
+}
+
+async function loadChart() {
+  const symbol = document.getElementById('sym-select').value;
+  const tf     = document.getElementById('tf-select').value;
+  const overlay = document.getElementById('chart-overlay');
+  const htfStatus = document.getElementById('htf-status');
+
+  // Stop any running update loop immediately (prevent race conditions)
+  stopAutoUpdate();
+
+  // Очищаем все визуальные уровни и зоны (Fibo, S/R)
+  clearVisuals();
+
+  // Clear stale EMA lines
+  if (emaSeries20)  emaSeries20.setData([]);
+  if (emaSeries50)  emaSeries50.setData([]);
+  if (emaSeries200) emaSeries200.setData([]);
+
+  overlay.innerHTML = `<div class="spinner"></div><div class="overlay-text">ЗАГРУЗКА ${tf.toUpperCase()} & HTF ${HTF_MAP[tf]?.toUpperCase()}…</div>`;
+  overlay.classList.remove('hidden');
+  htfStatus.textContent = '';
+
+  try {
+    const [raw, htfData] = await Promise.all([
+      fetchKlines(symbol, tf, 250),
+      fetchHTFConfirmation(symbol, tf),
+    ]);
+
+    const candles = raw.map(k => ({
+      time:   Math.floor(k[0] / 1000) + UTC_OFFSET_SEC,
+      open:   parseFloat(k[1]),
+      high:   parseFloat(k[2]),
+      low:    parseFloat(k[3]),
+      close:  parseFloat(k[4]),
+      volume: parseFloat(k[5]),
+    }));
+    _lastCandles = candles; // cache for tick updates
+
+    candleSeries.setData(candles.map(c => ({
+      time: c.time, open: c.open, high: c.high, low: c.low, close: c.close
+    })));
+
+    // EMA full history
+    const closes   = candles.map(c => c.close);
+    const buildEMA = arr => candles.map((c,i) => arr[i] !== null ? { time: c.time, value: arr[i] } : null).filter(Boolean);
+    if (!emaSeries20)  emaSeries20  = chart.addLineSeries({ color:'rgba(240,185,11,0.75)',  lineWidth:1, priceLineVisible:false, lastValueVisible:false });
+    if (!emaSeries50)  emaSeries50  = chart.addLineSeries({ color:'rgba(108,127,255,0.75)', lineWidth:1, priceLineVisible:false, lastValueVisible:false });
+    if (!emaSeries200) emaSeries200 = chart.addLineSeries({ color:'rgba(246,70,93,0.5)',    lineWidth:1, priceLineVisible:false, lastValueVisible:false });
+    emaSeries20.setData(buildEMA(calcEMAArray(closes, 20)));
+    emaSeries50.setData(buildEMA(calcEMAArray(closes, 50)));
+    emaSeries200.setData(buildEMA(calcEMAArray(closes, 200)));
+    chart.timeScale().fitContent();
+
+    // Restore trade lines after full reload (setData wipes them)
+    if (activeTrade && candleSeries) drawTradeLines(activeTrade);
+
+    const last = candles[candles.length - 1];
+    const prev = candles[candles.length - 2];
+    const chg  = ((last.close - prev.close) / prev.close * 100).toFixed(2);
+    const cls  = chg > 0 ? 'up' : 'dn';
+    // Apply dynamic price format for this coin
+    const pf = updatePriceFormat(last.close);
+    if (candleSeries)   candleSeries.applyOptions({ priceFormat: pf });
+    if (emaSeries20)    emaSeries20.applyOptions({ priceFormat: pf });
+    if (emaSeries50)    emaSeries50.applyOptions({ priceFormat: pf });
+    if (emaSeries200)   emaSeries200.applyOptions({ priceFormat: pf });
+
+    const dec = priceDecimals(last.close);
+    document.getElementById('header-price').textContent  = fmt(last.close);
+    document.getElementById('header-change').innerHTML   = `<span class="${cls}">${chg > 0 ? '+' : ''}${chg}%</span>`;
+    document.getElementById('header-price2').textContent = fmt(last.close);
+    document.getElementById('c-entry').value             = last.close.toFixed(dec);
+    lastKnownPrice = last.close;
+
+    if (activeTrade) updateActiveTradePnL(activeTrade, last.close);
+    if (htfData) htfStatus.innerHTML = `<span style="color:var(--muted);">HTF ${htfData.tf} ✓</span>`;
+
+    const sig = calcCompositeSignal(candles, htfData, `${symbol}|${tf}`);
+    lastSignal = sig;
+    renderAnalysisPanel(sig, candles);
+    overlay.classList.add('hidden');
+
+    // ── ВИЗУАЛИЗАЦИЯ ФИБОНАЧЧИ ──
+    try {
+      if (typeof drawFiboLevels === 'function' && sig && sig.fib) {
+        drawFiboLevels(sig.fib, candles[candles.length-1].close);
+      }
+    } catch(e) { console.warn('Fibo draw error', e); }
+
+    // ── ВИЗУАЛИЗАЦИЯ S/R ──
+    try {
+      if (typeof drawSupportResistance === 'function' && sig && sig.sr) {
+        drawSupportResistance(sig.sr);
+      }
+    } catch(e) { console.warn('SR draw error', e); }
+
+    // Launch unified auto-update loop
+    startAutoUpdate(symbol, tf);
+
+  } catch(e) {
+    overlay.innerHTML = `<div style="font-size:22px;">⚠️</div>
+      <div class="error-text">Ошибка загрузки.<br><small style="color:#555;">${e.message}</small></div>
+      <button class="btn" onclick="loadChart()">↻ Повторить</button>`;
+  }
+}
+// ═══════════════════════════════════════════════
+// RADAR  — зеркало основного анализатора
+// ═══════════════════════════════════════════════
+async function loadRadar() {
+  const dot = document.getElementById('radar-dot');
+  const status = document.getElementById('radar-status');
+  const tbody  = document.getElementById('radar-body');
+  dot.classList.add('loading');
+  status.textContent = 'Сканирование...';
+
+  const results = [];
+  for (const sym of RADAR_COINS) {
+    try {
+      // Небольшая пауза, чтобы не упереться в лимиты Binance
+      await new Promise(r => setTimeout(r, 300));
+
+      // История по рабочему ТФ (как на графике)
+      const raw = await fetchKlines(sym, radarTf, 250);
+      const candles = raw.map(k => ({
+        open: parseFloat(k[1]),
+        high: parseFloat(k[2]),
+        low:  parseFloat(k[3]),
+        close:parseFloat(k[4]),
+        volume:parseFloat(k[5]),
+      }));
+
+      // HTF‑подтверждение — тот же алгоритм, что и в loadChart
+      let htfData = null;
+      try {
+        await new Promise(r => setTimeout(r, 300));
+        htfData = await fetchHTFConfirmation(sym, radarTf);
+      } catch { htfData = null; }
+
+      const sig = calcCompositeSignal(candles, htfData, `${sym}|${radarTf}`);
+
+      // Агрессивный фильтр по RR: в радар попадают только сетапы с RR >= 1:2
+      if (sig && sig.triggerStatusRaw === 'TRIGGERED' && sig.sltp && sig.sltp.isValidRR === true) {
+        results.push({ sym, last: candles[candles.length-1].close, sig });
+      }
+    } catch {
+      results.push({ sym, last: null, sig: null });
+    }
+  }
+
+  tbody.innerHTML = '';
+  for (const { sym, last, sig } of results) {
+    const coin = sym.replace('USDT','');
+    let badgeClass='neutral', badgeText='HOLD';
+    let rsiStr='—', rsiColor='var(--muted)';
+    let emaStr='—', emaColor='var(--muted)';
+    let volStr='—', volColor='var(--muted)';
+
+    if (sig) {
+      // Используем уже отфильтрованный сигнал, как на основном графике
+      const cls = sig.signalClass;
+      const txt = sig.signal || '';
+
+      if (cls === 'buy') {
+        badgeClass = 'buy';
+        badgeText  = txt && txt.indexOf('STRONG') !== -1 ? '⚡BUY' : 'BUY';
+      } else if (cls === 'sell') {
+        badgeClass = 'sell';
+        badgeText  = txt && txt.indexOf('STRONG') !== -1 ? '⚡SELL' : 'SELL';
+      } else if (txt && txt.startsWith('WAIT')) {
+        badgeClass = 'watch';
+        badgeText  = 'WATCH';
+      } else {
+        badgeClass = 'neutral';
+        badgeText  = 'HOLD';
+      }
+
+      rsiStr   = sig.rsi !== null && sig.rsi !== undefined ? sig.rsi.toFixed(1) : '—';
+      rsiColor = sig.rsi < 35 ? 'var(--green)' : sig.rsi > 65 ? 'var(--red)' : 'var(--muted)';
+
+      if (sig.ema) {
+        emaStr   = sig.ema.aboveAll ? '↑' : sig.ema.belowAll ? '↓' : '~';
+        emaColor = sig.ema.aboveAll ? 'var(--green)' : sig.ema.belowAll ? 'var(--red)' : 'var(--muted)';
+      }
+
+      if (sig.vol && sig.vol.ratio !== null && sig.vol.ratio !== undefined) {
+        volStr   = `×${sig.vol.ratio.toFixed(1)}`;
+        volColor = sig.vol.spike ? (sig.vol.bullish ? 'var(--green)' : 'var(--red)') : 'var(--muted)';
+      }
+    }
+
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td><div class="coin-name">${coin}</div><div class="coin-sub">${last?fmt(last):'—'}</div></td>
+      <td><span style="font-size:11px;font-weight:600;color:${rsiColor};">${rsiStr}</span></td>
+      <td><span style="font-size:13px;font-weight:700;color:${emaColor};">${emaStr}</span></td>
+      <td><span style="font-size:11px;font-weight:600;color:${volColor};">${volStr}</span></td>
+      <td><span class="badge ${badgeClass}">${badgeText}</span></td>`;
+    tbody.appendChild(tr);
+  }
+
+  dot.classList.remove('loading');
+  const now = new Date();
+  status.textContent = `Обновлено: ${now.getHours().toString().padStart(2,'0')}:${now.getMinutes().toString().padStart(2,'0')}:${now.getSeconds().toString().padStart(2,'0')}`;
+}
+
+function startRadarTimer() {
+  if (radarTimer) clearInterval(radarTimer);
+  radarTimer = setInterval(loadRadar, 60000);
+}
+
+document.querySelectorAll('.tab-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    radarTf = btn.dataset.tf;
+    loadRadar();
+  });
+});
+
+// ═══════════════════════════════════════════════
+// CALCULATOR
+// ═══════════════════════════════════════════════
+function calcRisk() {
+  const errEl = document.getElementById('calc-error');
+  errEl.style.display = 'none';
+  const deposit = parseFloat(document.getElementById('c-deposit').value);
+  const riskPct = parseFloat(document.getElementById('c-risk').value);
+  const entry   = parseFloat(document.getElementById('c-entry').value);
+  const stop    = parseFloat(document.getElementById('c-stop').value);
+  if (!deposit || !riskPct || !entry || !stop) { errEl.textContent='Заполните все поля'; errEl.style.display='block'; return; }
+  if (entry === stop) { errEl.textContent='Вход и стоп не могут совпадать'; errEl.style.display='block'; return; }
+  const riskUSD = deposit * (riskPct/100);
+  const stopPct = Math.abs((entry-stop)/entry);
+  const posSize = riskUSD / stopPct;
+  const coins   = posSize / entry;
+  document.getElementById('r-risk').textContent  = '$' + riskUSD.toFixed(2);
+  document.getElementById('r-size').textContent  = '$' + posSize.toFixed(2);
+  document.getElementById('r-coins').textContent = coins.toFixed(6) + ' шт.';
+  document.getElementById('r-pct').textContent   = (stopPct*100).toFixed(2) + '%';
+  const fillW = Math.min(riskPct*10,100);
+  const fillC = riskPct<=1?'var(--green)':riskPct<=3?'var(--yellow)':'var(--red)';
+  document.getElementById('risk-fill').style.width = fillW+'%';
+  document.getElementById('risk-fill').style.background = fillC;
+}
+
+// ═══════════════════════════════════════════════
+// INIT
+// ═══════════════════════════════════════════════
+document.getElementById('sym-select').addEventListener('change', () => {
+  stopAutoUpdate(); // kill old loop immediately on symbol change
+  loadChart();
+});
+document.getElementById('tf-select').addEventListener('change', () => {
+  stopAutoUpdate(); // kill on tf change too
+  loadChart();
+});
+document.getElementById('refresh-btn').addEventListener('click', loadChart);
+
+function waitForLib(cb, tries) {
+  tries = tries || 0;
+  if (typeof LightweightCharts !== 'undefined') { cb(); }
+  else if (window._lwcFailed || tries > 100) {
+    document.getElementById('chart-overlay').innerHTML = `
+      <div style="font-size:22px;">⚠️</div>
+      <div class="error-text">Не удалось загрузить библиотеку графиков.<br>Проверьте интернет.</div>
+      <button class="btn" onclick="location.reload()">↻ Перезагрузить</button>`;
+  } else { setTimeout(() => waitForLib(cb, tries+1), 100); }
+}
+
+waitForLib(() => {
+  initChart();
+  loadChart();       // will call startAutoUpdate() internally after load
+  loadRadar();
+  startRadarTimer();
+  restoreDemoTrade();
+});
+
+// ═══════════════════════════════════════════════════════════
+// DEMO TRADING ENGINE
+// ═══════════════════════════════════════════════════════════
+
+// ── Toast notification ──
+function showToast(html, type = '', duration = 6000) {
+  let el = document.getElementById('global-toast');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'global-toast';
+    el.className = 'toast';
+    document.body.appendChild(el);
+  }
+  el.innerHTML = html;
+  el.className = `toast ${type}`;
+  requestAnimationFrame(() => { el.classList.add('show'); });
+  clearTimeout(el._timer);
+  el._timer = setTimeout(() => {
+    el.classList.remove('show');
+  }, duration);
+}
+
+// ── Price Lines management ──
+function drawTradeLines(trade) {
+  if (!candleSeries) return;
+  removeTradeLines();
+
+  priceLines.entry = candleSeries.createPriceLine({
+    price: trade.entryPrice,
+    color: '#6c7fff',
+    lineWidth: 2,
+    lineStyle: 0, // solid
+    axisLabelVisible: true,
+    title: `ВХОД ${trade.side}`,
+  });
+
+  priceLines.sl = candleSeries.createPriceLine({
+    price: trade.stopLoss,
+    color: '#f6465d',
+    lineWidth: 2,
+    lineStyle: 2, // dashed
+    axisLabelVisible: true,
+    title: 'СТОП-ЛОСС',
+  });
+
+  trade.takeProfits.forEach((tp, i) => {
+    priceLines[`tp${i}`] = candleSeries.createPriceLine({
+      price: tp,
+      color: '#0ecb81',
+      lineWidth: 1,
+      lineStyle: 2,
+      axisLabelVisible: true,
+      title: `ТП-${i + 1}`,
+    });
+  });
+}
+
+function removeTradeLines() {
+  if (!candleSeries) return;
+  Object.values(priceLines).forEach(line => {
+    try { candleSeries.removePriceLine(line); } catch {}
+  });
+  priceLines = {};
+}
+
+// ═══════════════════════════════════════════════
+// VISUAL LEVELS (FIBO + S/R) MANAGEMENT
+// ═══════════════════════════════════════════════
+let visualLines = [];
+
+function clearVisuals() {
+  if (!visualLines || !visualLines.length) return;
+  visualLines.forEach(obj => {
+    if (obj && obj.ref) {
+      try { candleSeries.removePriceLine(obj.ref); } catch {}
+    }
+  });
+  visualLines = [];
+}
+
+function drawFiboLevels(fibData, price) {
+  if (!fibData || !candleSeries) return;
+  // Пунктирные тонкие линии 0.382, 0.5, 0.618
+  const levels = [
+    { val: fibData.level0382, color: '#a78bfa', label: 'FIB 0.382' },
+    { val: fibData.level0500, color: '#f0b90b', label: 'FIB 0.5' },
+    { val: fibData.level0618, color: '#6c7fff', label: 'FIB 0.618' },
+  ];
+  levels.forEach(lvl => {
+    const line = candleSeries.createPriceLine({
+      price: lvl.val,
+      color: lvl.color,
+      lineWidth: 1,
+      lineStyle: 2, // пунктир
+      axisLabelVisible: true,
+      title: lvl.label,
+    });
+    visualLines.push({ type: 'line', ref: line });
+  });
+}
+
+function drawSupportResistance(srData) {
+  if (!srData || !candleSeries) return;
+  if (srData.nearestSupport) {
+    const supLine = candleSeries.createPriceLine({
+      price: srData.nearestSupport,
+      color: '#0ecb81',
+      lineWidth: 2,
+      lineStyle: 0,
+      axisLabelVisible: true,
+      title: 'SUPPORT',
+    });
+    visualLines.push({ type: 'line', ref: supLine });
+  }
+  if (srData.nearestResistance) {
+    const resLine = candleSeries.createPriceLine({
+      price: srData.nearestResistance,
+      color: '#f6465d',
+      lineWidth: 2,
+      lineStyle: 0,
+      axisLabelVisible: true,
+      title: 'RESISTANCE',
+    });
+    visualLines.push({ type: 'line', ref: resLine });
+  }
+}
+
+// ── Switch UI between Calculator and Active Trade panel ──
+function showCalcPanel() {
+  document.getElementById('calc-panel').style.display = 'block';
+  document.getElementById('active-trade-panel').style.display = 'none';
+}
+
+function showActiveTradePanel(trade) {
+  document.getElementById('calc-panel').style.display = 'none';
+  const panel = document.getElementById('active-trade-panel');
+  panel.style.display = 'flex';
+  panel.style.flexDirection = 'column';
+  panel.style.height = '100%';
+
+  const coin = trade.symbol.replace('USDT','');
+  const dirColor = trade.side === 'LONG' ? 'var(--green)' : 'var(--red)';
+  const dirIcon  = trade.side === 'LONG' ? '📈' : '📉';
+
+  document.getElementById('at-icon').textContent   = dirIcon;
+  document.getElementById('at-title').textContent  = 'АКТИВНАЯ ПОЗИЦИЯ';
+  document.getElementById('at-coin').textContent   = `${coin} / USDT`;
+  document.getElementById('at-entry').textContent  = fmt(trade.entryPrice);
+  document.getElementById('at-sl').textContent     = fmt(trade.stopLoss);
+
+  const badge = document.getElementById('at-badge');
+  badge.textContent = trade.side;
+  badge.style.background = trade.side === 'LONG' ? 'rgba(14,203,129,0.15)' : 'rgba(246,70,93,0.15)';
+  badge.style.color       = dirColor;
+  badge.style.border      = `1px solid ${dirColor}`;
+
+  // Render TP list
+  const tpsEl = document.getElementById('at-tps');
+  tpsEl.innerHTML = trade.takeProfits.map((tp, i) => `
+    <div style="background:var(--panel2);border-radius:6px;padding:7px 10px;border:1px solid rgba(14,203,129,0.25);display:flex;justify-content:space-between;align-items:center;">
+      <span style="font-size:9px;color:var(--green);letter-spacing:1px;">ТЕЙК-ПРОФИТ ${i+1}</span>
+      <span style="font-size:12px;font-weight:600;color:var(--green);">${fmt(tp)}</span>
+    </div>`).join('');
+
+  updateActiveTradePnL(trade, lastKnownPrice || trade.entryPrice);
+}
+
+// ── Update PnL display live ──
+function updateActiveTradePnL(trade, currentPrice) {
+  if (!trade || !currentPrice) return;
+  document.getElementById('at-current').textContent = fmt(currentPrice);
+
+  // ── Correct live PnL (mirrors closeTrade formula) ──
+  const pnlPct = trade.side === 'LONG'
+    ? ((currentPrice - trade.entryPrice) / trade.entryPrice) * 100
+    : ((trade.entryPrice - currentPrice) / trade.entryPrice) * 100;
+  const pnlUsd = (pnlPct / 100) * trade.positionSize;
+
+  const sign  = pnlUsd >= 0 ? '+' : '';
+  const cls   = pnlUsd >= 0 ? 'profit' : 'loss';
+
+  const pnlEl  = document.getElementById('at-pnl-usd');
+  const pctEl  = document.getElementById('at-pnl-pct');
+  if (pnlEl) { pnlEl.textContent = `${sign}$${Math.abs(pnlUsd).toFixed(2)}`; pnlEl.className = cls; }
+  if (pctEl) { pctEl.textContent = `${sign}${pnlPct.toFixed(2)}%`; pctEl.className = cls; }
+
+  // Update time open + 24h expiry warning
+  const timeEl = document.getElementById('at-time');
+  if (timeEl && trade.openedAt) {
+    const elapsed = Date.now() - trade.openedAt;
+    const mins    = Math.floor(elapsed / 60000);
+    const hours   = Math.floor(elapsed / 3600000);
+    const is24h   = elapsed >= 86400000; // 24 hours in ms
+
+    let timeStr;
+    if (mins < 1)       timeStr = 'меньше минуты';
+    else if (hours < 1) timeStr = `${mins} мин`;
+    else if (hours < 24)timeStr = `${hours} ч ${mins % 60} мин`;
+    else                timeStr = `${Math.floor(hours / 24)} д ${hours % 24} ч`;
+
+    timeEl.innerHTML = is24h
+      ? `<span style="color:var(--yellow);font-weight:600;">⏳ Время истекает · ${timeStr}</span> · $${trade.positionSize.toFixed(2)}`
+      : `Открыта: ${timeStr} · Размер: $${trade.positionSize.toFixed(2)}`;
+
+    // Pulse the block header yellow when expired
+    const header = document.querySelector('#active-trade-panel .block-header');
+    if (header) {
+      header.style.background = is24h
+        ? 'rgba(240,185,11,0.15)'
+        : 'rgba(108,127,255,0.12)';
+    }
+  }
+}
+
+// ── Open a fast trade using current calc values ──
+function openFastTrade(side) {
+  if (activeTrade) {
+    showToast('⚠️ Уже есть активная сделка. Закройте её перед открытием новой.', 'loss');
+    return;
+  }
+
+  // Нужен актуальный торговый план из анализа под графиком
+  if (!lastSignal || !lastSignal.sltp || !Array.isArray(lastSignal.sltp.tps) || lastSignal.sltp.tps.length === 0) {
+    showToast('⚠️ Нет актуального торгового плана для этой пары. Дождитесь сигнала и расчёта SL/TP.', 'loss');
+    return;
+  }
+
+  const symbol     = document.getElementById('sym-select').value;
+  const entryPrice = parseFloat(document.getElementById('c-entry').value) || lastKnownPrice;
+
+  const plan = lastSignal.sltp;
+  const stopLoss = plan.sl;
+
+  // Синхронизируем поле стопа с планом, чтобы калькулятор и логика использовали один SL
+  if (stopLoss) {
+    const dec = priceDecimals(stopLoss);
+    document.getElementById('c-stop').value = stopLoss.toFixed(dec);
+  }
+
+  // ── positionSize: compute from calc inputs, NOT from display text ──
+  // Prefer: deposit × riskPct / stopDistance% (same formula as calcRisk)
+  // Fallback: read r-size display if calc was already run, else default $100
+  let positionSize = 100;
+  const deposit  = parseFloat(document.getElementById('c-deposit').value);
+  const riskPct  = parseFloat(document.getElementById('c-risk').value);
+  if (deposit > 0 && riskPct > 0 && entryPrice > 0 && stopLoss > 0) {
+    const stopDist = Math.abs(entryPrice - stopLoss) / entryPrice; // fraction
+    if (stopDist > 0) {
+      const riskUsd = deposit * (riskPct / 100);
+      positionSize  = riskUsd / stopDist; // correct: risk$ / stop% = position size
+    }
+  } else {
+    // fallback: try to read already-computed value from display
+    const displayed = parseFloat(document.getElementById('r-size').textContent.replace(/[$,]/g, ''));
+    if (displayed > 0) positionSize = displayed;
+  }
+
+  if (!entryPrice || !stopLoss) {
+    showToast('⚠️ Укажите Цену входа и Стоп-лосс в калькуляторе перед открытием сделки.', 'loss');
+    return;
+  }
+  if (entryPrice === stopLoss) {
+    showToast('⚠️ Цена входа и стоп-лосс не могут совпадать.', 'loss');
+    return;
+  }
+
+  // Берём ТП напрямую из торгового плана сигнала
+  const takeProfits = plan.tps.slice();
+
+  activeTrade = {
+    id:           Date.now(),
+    symbol,
+    side,
+    entryPrice,
+    stopLoss,
+    takeProfits,
+    positionSize,
+    openedAt:     Date.now(),
+    hitTPs:       [],        // which TPs were hit (indices)
+    breakevenHit: false,
+  };
+
+  persistActiveTrade(activeTrade);
+  drawTradeLines(activeTrade);
+  showActiveTradePanel(activeTrade);
+  startMonitor();
+
+  const coin = symbol.replace('USDT','');
+  showToast(
+    `${side === 'LONG' ? '📈 LONG' : '📉 SHORT'} <strong>${coin}</strong> открыт по ${fmt(entryPrice)}<br>` +
+    `💰 Позиция: <strong>$${positionSize.toFixed(2)}</strong><br>` +
+    `🔴 СЛ: ${fmt(stopLoss)} &nbsp;·&nbsp; 🟢 ТП1: ${fmt(takeProfits[0])}`,
+    side === 'LONG' ? 'win' : 'loss', 6000
+  );
+}
+
+// ── Fetch real-time price for a specific symbol from Binance ──
+async function fetchPrice(symbol) {
+  try {
+    const raw = await fetchWithProxy(`${API_BASE}?symbol=${symbol}&interval=1m&limit=1`);
+    if (Array.isArray(raw) && raw.length) return parseFloat(raw[0][4]); // close of last 1m candle
+  } catch {}
+  return null;
+}
+
+// ── Force close: always fetch live price first, then close ──
+async function forceCloseTrade() {
+  if (!activeTrade) return;
+  // Show spinner-state while fetching
+  const btn = document.querySelector('[onclick="forceCloseTrade()"]');
+  if (btn) { btn.textContent = '⏳ Получаю цену…'; btn.disabled = true; }
+
+  const livePrice = await fetchPrice(activeTrade.symbol);
+  const closePrice = livePrice || lastKnownPrice || activeTrade.entryPrice;
+
+  if (btn) { btn.textContent = '❌ ЗАКРЫТЬ ПРИНУДИТЕЛЬНО'; btn.disabled = false; }
+  closeTrade('manual', closePrice);
+}
+
+// ── Close trade and log to journal ──
+// closePrice is always provided by caller (fetched fresh from API)
+function closeTrade(reason, closePrice) {
+  if (!activeTrade) return;
+
+  const trade = activeTrade;
+
+  // ── Correct PnL calculation ──
+  // pnlPct: directional % move of price
+  const pnlPct = trade.side === 'LONG'
+    ? ((closePrice - trade.entryPrice) / trade.entryPrice) * 100
+    : ((trade.entryPrice - closePrice) / trade.entryPrice) * 100;
+  // pnlUsd: apply that % to the dollar position size (not coin count)
+  const pnlUsd = (pnlPct / 100) * trade.positionSize;
+  const isWin  = pnlUsd > 0;
+
+  // Save to journal
+  const journalEntry = {
+    id:      Date.now(),
+    coin:    trade.symbol,
+    dir:     trade.side,
+    date:    new Date(trade.openedAt).toISOString().split('T')[0],
+    entry:   trade.entryPrice,
+    sl:      trade.stopLoss,
+    size:    trade.positionSize,
+    tps:     trade.takeProfits,
+    notes:   `Demo · закрыто: ${reason}`,
+    slPct:   Math.abs((trade.entryPrice - trade.stopLoss) / trade.entryPrice * 100).toFixed(2),
+    risk:    Math.abs((trade.entryPrice - trade.stopLoss) / trade.entryPrice * trade.positionSize).toFixed(2),
+    status:  isWin ? 'win' : 'loss',
+    pnl:     pnlUsd.toFixed(2),
+  };
+
+  try {
+    const journal = JSON.parse(localStorage.getItem('tradeJournal_v1') || '[]');
+    journal.unshift(journalEntry);
+    localStorage.setItem('tradeJournal_v1', JSON.stringify(journal));
+  } catch {}
+
+  // Toast result
+  const sign = pnlUsd >= 0 ? '+' : '';
+  const reasonLabels = { sl:'⛔ СТОП-ЛОСС', tp:'✅ ТЕЙК-ПРОФИТ', manual:'🖐 РУЧНОЕ ЗАКРЫТИЕ' };
+  showToast(`
+    <strong>${reasonLabels[reason] || reason}</strong><br>
+    ${trade.symbol.replace('USDT','')} ${trade.side} закрыт<br>
+    Цена: ${fmt(closePrice)}<br>
+    <span style="font-size:15px;font-weight:700;color:${isWin?'#0ecb81':'#f6465d'};">${sign}$${Math.abs(pnlUsd).toFixed(2)} (${sign}${pnlPct.toFixed(2)}%)</span>
+  `, isWin ? 'win' : 'loss', 8000);
+
+  // Cleanup
+  removeTradeLines();
+  activeTrade = null;
+  persistActiveTrade(null);
+  showCalcPanel();
+  // Restart auto-update loop for the chart symbol currently on screen.
+  // IMPORTANT: if the chart is showing a DIFFERENT symbol than the closed trade,
+  // we simply resume the existing loop — we do NOT reload or update foreign chart data.
+  if (currentSymbol && currentTf) {
+    stopAutoUpdate();
+    chartTimer = setInterval(autoUpdateTick, 4000);
+    // Only update header if chart symbol matches (avoid polluting foreign symbol display)
+    if (trade.symbol === currentSymbol) {
+      autoUpdateTick(); // one immediate tick to refresh price display
+    }
+    // If symbols differ: chart keeps ticking silently on its own symbol — no cross-contamination
+  }
+}
+
+// ── Monitor: delegated to autoUpdateTick (unified loop) ──
+// kept as thin wrappers so openFastTrade / restoreDemoTrade still compile
+function startMonitor() {
+  // No-op: the auto-update loop (startAutoUpdate) handles monitoring.
+  // If no chart loop running yet (e.g. trade restored on page load), 
+  // bootstrap a lightweight 4s loop for the active trade's symbol.
+  if (!chartTimer && activeTrade) {
+    stopAutoUpdate();
+    chartTimer = setInterval(autoUpdateTick, 4000);
+    autoUpdateTick();
+  }
+}
+
+function stopMonitor() {
+  // No-op when chart is active — stopAutoUpdate is called on close.
+  // Only stop when there is no active chart (shouldn't happen normally).
+}
+// ── Restore trade on page reload ──
+function restoreDemoTrade() {
+  const saved = loadActiveTrade();
+  if (!saved) return;
+  // Backward‑compat: ensure breakevenHit flag exists
+  if (saved && typeof saved.breakevenHit === 'undefined') {
+    saved.breakevenHit = false;
+  }
+  activeTrade = saved;
+  // Restore price lines after chart is ready
+  setTimeout(() => {
+    if (candleSeries && activeTrade) {
+      drawTradeLines(activeTrade);
+      showActiveTradePanel(activeTrade);
+      startMonitor();
+      showToast(`🔄 Сделка восстановлена: ${activeTrade.symbol.replace('USDT','')} ${activeTrade.side}`, '', 4000);
+    }
+  }, 2000);
+}
+
+// ═══════════════════════════════════════════════════════════
+// TRADE JOURNAL
+// ═══════════════════════════════════════════════════════════
+const JOURNAL_KEY = 'tradeJournal_v1';
+let tpCount = 1;
+
+function loadTrades() {
+  try { return JSON.parse(localStorage.getItem(JOURNAL_KEY) || '[]'); }
+  catch { return []; }
+}
+
+function saveTrades(trades) {
+  localStorage.setItem(JOURNAL_KEY, JSON.stringify(trades));
+}
+
+// ── Open / Close ──
+function openJournal() {
+  // Auto-fill date
+  document.getElementById('j-date').value = new Date().toISOString().split('T')[0];
+  // Auto-fill entry price from chart if available
+  const entryEl = document.getElementById('c-entry');
+  if (entryEl && entryEl.value) document.getElementById('j-entry').value = entryEl.value;
+  // Auto-fill coin from selector
+  const symEl = document.getElementById('sym-select');
+  if (symEl) document.getElementById('j-coin').value = symEl.value;
+
+  document.getElementById('journal-modal').style.display = 'block';
+  document.body.style.overflow = 'hidden';
+  renderJournalTable();
+}
+
+function closeJournal() {
+  document.getElementById('journal-modal').style.display = 'none';
+  document.body.style.overflow = '';
+  // Save form as draft in sessionStorage
+  saveDraft();
+}
+
+// Close modal on backdrop click
+document.getElementById('journal-modal').addEventListener('click', function(e) {
+  if (e.target === this) closeJournal();
+});
+
+// ── Draft save/restore ──
+function saveDraft() {
+  const draft = {
+    coin: document.getElementById('j-coin').value,
+    dir:  document.getElementById('j-dir').value,
+    entry: document.getElementById('j-entry').value,
+    sl:    document.getElementById('j-sl').value,
+    size:  document.getElementById('j-size').value,
+    notes: document.getElementById('j-notes').value,
+    tps:   getTPValues(),
+  };
+  sessionStorage.setItem('tradeDraft', JSON.stringify(draft));
+}
+
+function restoreDraft() {
+  try {
+    const d = JSON.parse(sessionStorage.getItem('tradeDraft') || 'null');
+    if (!d) return;
+    if (d.coin)  document.getElementById('j-coin').value  = d.coin;
+    if (d.dir)   document.getElementById('j-dir').value   = d.dir;
+    if (d.entry) document.getElementById('j-entry').value = d.entry;
+    if (d.sl)    document.getElementById('j-sl').value    = d.sl;
+    if (d.size)  document.getElementById('j-size').value  = d.size;
+    if (d.notes) document.getElementById('j-notes').value = d.notes;
+  } catch {}
+}
+
+// ── Dynamic TP fields ──
+function addTP() {
+  if (tpCount >= 5) return; // max 5 TPs
+  tpCount++;
+  const container = document.getElementById('j-tp-fields');
+  const div = document.createElement('div');
+  div.className = 'field-group';
+  div.id = `j-tp-wrap-${tpCount}`;
+  div.innerHTML = `<label class="field-label" style="display:flex;justify-content:space-between;">
+    <span>ТП-${tpCount}</span>
+    <span onclick="removeTP(${tpCount})" style="cursor:pointer;color:var(--red);font-size:9px;">✕ убрать</span>
+  </label>
+  <input type="number" id="j-tp-${tpCount}" placeholder="0" min="0" step="any">`;
+  container.appendChild(div);
+  if (tpCount >= 5) document.getElementById('j-add-tp').style.opacity = '0.4';
+}
+
+function removeTP(n) {
+  const el = document.getElementById(`j-tp-wrap-${n}`);
+  if (el) { el.remove(); tpCount = Math.max(1, tpCount - 1); }
+  document.getElementById('j-add-tp').style.opacity = '1';
+}
+
+function getTPValues() {
+  const tps = [];
+  for (let i = 1; i <= 5; i++) {
+    const el = document.getElementById(`j-tp-${i}`);
+    if (el && el.value) tps.push(parseFloat(el.value));
+  }
+  return tps;
+}
+
+function resetForm() {
+  ['j-entry','j-sl','j-size','j-notes'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.value = '';
+  });
+  // Remove extra TP fields
+  for (let i = 2; i <= 5; i++) {
+    const el = document.getElementById(`j-tp-wrap-${i}`);
+    if (el) el.remove();
+  }
+  document.getElementById('j-tp-1').value = '';
+  tpCount = 1;
+  document.getElementById('j-add-tp').style.opacity = '1';
+  document.getElementById('j-error').style.display = 'none';
+  sessionStorage.removeItem('tradeDraft');
+}
+
+// ── Save trade ──
+function saveTrade() {
+  const coin  = document.getElementById('j-coin').value;
+  const dir   = document.getElementById('j-dir').value;
+  const date  = document.getElementById('j-date').value;
+  const entry = parseFloat(document.getElementById('j-entry').value);
+  const sl    = parseFloat(document.getElementById('j-sl').value);
+  const size  = parseFloat(document.getElementById('j-size').value);
+  const notes = document.getElementById('j-notes').value.trim();
+  const tps   = getTPValues();
+
+  const errEl = document.getElementById('j-error');
+  if (!entry || !sl || !size) {
+    errEl.textContent = 'Заполните: Цена входа, Стоп-лосс и Сумма входа';
+    errEl.style.display = 'block';
+    return;
+  }
+  if (!date) {
+    errEl.textContent = 'Укажите дату';
+    errEl.style.display = 'block';
+    return;
+  }
+  errEl.style.display = 'none';
+
+  const slPct = Math.abs((entry - sl) / entry * 100);
+  const risk  = size * (slPct / 100);
+
+  const trade = {
+    id:    Date.now(),
+    coin, dir, date, entry, sl, size, tps, notes,
+    slPct: slPct.toFixed(2),
+    risk:  risk.toFixed(2),
+    status: 'open',   // open | win | loss
+    pnl:   null,      // filled by user later
+  };
+
+  const trades = loadTrades();
+  trades.unshift(trade); // newest first
+  saveTrades(trades);
+  resetForm();
+  renderJournalTable();
+}
+
+// ── Render table ──
+function renderJournalTable() {
+  const trades = loadTrades();
+  const tbody  = document.getElementById('j-tbody');
+  const countEl= document.getElementById('j-trade-count');
+  const pnlEl  = document.getElementById('j-pnl-summary');
+
+  countEl.textContent = trades.length;
+
+  if (trades.length === 0) {
+    tbody.innerHTML = '<tr id="j-empty-row"><td colspan="10" style="text-align:center;color:var(--muted);padding:24px;font-size:11px;">Нет записей. Добавьте первую сделку.</td></tr>';
+    pnlEl.textContent = '';
+    return;
+  }
+
+  // Compute overall PnL
+  const closedPnl = trades.filter(t => t.pnl !== null).reduce((s, t) => s + parseFloat(t.pnl || 0), 0);
+  const wins  = trades.filter(t => t.status === 'win').length;
+  const losses= trades.filter(t => t.status === 'loss').length;
+  if (wins + losses > 0) {
+    const wr = (wins / (wins + losses) * 100).toFixed(0);
+    const pnlColor = closedPnl >= 0 ? 'var(--green)' : 'var(--red)';
+    pnlEl.innerHTML = `WR: <span style="color:var(--green);">${wr}%</span> &nbsp; P&L: <span style="color:${pnlColor};">${closedPnl >= 0 ? '+' : ''}$${closedPnl.toFixed(2)}</span>`;
+  }
+
+  tbody.innerHTML = trades.map((t, idx) => {
+    const coinLabel = t.coin.replace('USDT', '');
+    const dirColor  = t.dir === 'LONG' ? 'var(--green)' : 'var(--red)';
+    const tpsStr    = t.tps && t.tps.length > 0 ? t.tps.map((v,i) => `<span style="font-size:9px;color:var(--accent);">TP${i+1}: $${v.toLocaleString('en-US',{maximumFractionDigits:4})}</span>`).join('<br>') : '<span style="color:var(--border);">—</span>';
+    const statusBadge = `<span class="j-status-badge j-status-${t.status}" onclick="cycleStatus(${t.id})" title="Нажми чтобы изменить статус">${t.status === 'open' ? 'ОТКРЫТА' : t.status === 'win' ? '✅ ПРОФИТ' : '❌ УБЫТОК'}</span>`;
+    const pnlCell = `<input class="j-pnl-input" type="number" step="any" value="${t.pnl !== null ? t.pnl : ''}" placeholder="±$" onchange="updatePNL(${t.id}, this.value)" title="Введите итоговый P&L">`;
+
+    return `<tr>
+      <td style="padding:8px 10px;white-space:nowrap;color:var(--muted);">${t.date}</td>
+      <td style="padding:8px 10px;font-weight:700;">${coinLabel}</td>
+      <td style="padding:8px 10px;"><span style="color:${dirColor};font-weight:700;font-size:10px;">${t.dir}</span></td>
+      <td style="padding:8px 10px;text-align:right;">$${Number(t.entry).toLocaleString('en-US',{maximumFractionDigits:6})}</td>
+      <td style="padding:8px 10px;text-align:right;color:var(--red);">$${Number(t.sl).toLocaleString('en-US',{maximumFractionDigits:6})}<br><span style="font-size:9px;color:var(--muted);">−${t.slPct}%</span></td>
+      <td style="padding:8px 10px;text-align:right;">$${Number(t.size).toLocaleString('en-US',{maximumFractionDigits:2})}<br><span style="font-size:9px;color:var(--red);">риск $${t.risk}</span></td>
+      <td style="padding:8px 10px;line-height:1.8;">${tpsStr}</td>
+      <td style="padding:8px 10px;text-align:center;">${statusBadge}</td>
+      <td style="padding:8px 10px;text-align:center;">${pnlCell}</td>
+      <td style="padding:8px 10px;text-align:center;"><button onclick="deleteTrade(${t.id})" style="background:rgba(246,70,93,0.08);border:1px solid rgba(246,70,93,0.25);color:var(--red);font-size:12px;width:26px;height:26px;border-radius:4px;cursor:pointer;" title="Удалить">🗑</button></td>
+    </tr>`;
+  }).join('');
+}
+
+// ── Status cycle: open → win → loss → open ──
+function cycleStatus(id) {
+  const trades = loadTrades();
+  const t = trades.find(t => t.id === id);
+  if (!t) return;
+  t.status = t.status === 'open' ? 'win' : t.status === 'win' ? 'loss' : 'open';
+  saveTrades(trades);
+  renderJournalTable();
+}
+
+// ── Update PnL inline ──
+function updatePNL(id, val) {
+  const trades = loadTrades();
+  const t = trades.find(t => t.id === id);
+  if (!t) return;
+  t.pnl = val !== '' ? parseFloat(val) : null;
+  saveTrades(trades);
+  renderJournalTable();
+}
+
+// ── Delete trade ──
+function deleteTrade(id) {
+  if (!confirm('Удалить эту сделку из журнала?')) return;
+  const trades = loadTrades().filter(t => t.id !== id);
+  saveTrades(trades);
+  renderJournalTable();
+}
+
+// ── Export CSV ──
+function exportJournal() {
+  const trades = loadTrades();
+  if (!trades.length) return;
+  const header = ['Дата','Монета','Направление','Вход','Стоп','Стоп%','Сумма','Риск$','ТП','Статус','PnL','Заметки'];
+  const rows = trades.map(t => [
+    t.date, t.coin.replace('USDT',''), t.dir, t.entry, t.sl, t.slPct,
+    t.size, t.risk, t.tps.join(';'), t.status, t.pnl ?? '', `"${(t.notes||'').replace(/"/g,"'")}"`,
+  ]);
+  const csv = [header, ...rows].map(r => r.join(',')).join('\n');
+  const a = document.createElement('a');
+  a.href = 'data:text/csv;charset=utf-8,' + encodeURIComponent(csv);
+  a.download = `trade_journal_${new Date().toISOString().split('T')[0]}.csv`;
+  a.click();
+}
+
+// Restore draft on load (if any)
+restoreDraft();
+
+</script>
+</body>
+</html>
