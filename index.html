@@ -339,6 +339,8 @@
             <button class="btn" onclick="openFastTrade('LONG')" style="justify-content:center;padding:8px;border-color:var(--green);color:var(--green);font-weight:700;letter-spacing:1px;">⚡ FAST LONG</button>
             <button class="btn" onclick="openFastTrade('SHORT')" style="justify-content:center;padding:8px;border-color:var(--red);color:var(--red);font-weight:700;letter-spacing:1px;">⚡ FAST SHORT</button>
           </div>
+          <!-- TEST TELEGRAM BUTTON -->
+          <button class="btn" onclick="sendTelegramAlert('Все работает!')" style="width:100%;justify-content:center;padding:8px;margin-top:7px;border-color:var(--yellow);color:var(--yellow);letter-spacing:1px;">🔔 ТЕСТ ТЕЛЕГРАМ</button>
         </div>
       </div>
 
@@ -529,6 +531,38 @@
 
 <script>
 // ═══════════════════════════════════════════════
+// TELEGRAM CONFIG
+// ═══════════════════════════════════════════════
+const TELEGRAM_BOT_TOKEN = '8798928207:AAF1cb0UPfi1k2-uajk-HkkKnFGm3uVgxC0';
+const TELEGRAM_CHAT_ID = '1086359928';
+const lastAlertTime = {}; // { 'BTCUSDT': timestamp } — защита от спама (15 мин)
+
+async function sendTelegramAlert(message) {
+  try {
+    const chatId = String(TELEGRAM_CHAT_ID).trim();
+    const text = encodeURIComponent(message);
+    const tgUrl = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage?chat_id=${chatId}&text=${text}`;
+    const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(tgUrl)}`;
+    console.log('Sending to URL:', proxyUrl);
+    const res = await fetch(proxyUrl);
+    if (!res.ok) {
+      const errText = await res.text();
+      console.error('Telegram Error:', res.status, errText);
+    } else {
+      console.log('Telegram alert sent successfully');
+    }
+  } catch(e) { console.error('Telegram Error:', e); }
+}
+
+function canSendAlert(symbol) {
+  const now = Date.now();
+  const last = lastAlertTime[symbol] || 0;
+  if (now - last < 15 * 60 * 1000) return false; // 15 минут кулдаун
+  lastAlertTime[symbol] = now;
+  return true;
+}
+
+// ═══════════════════════════════════════════════
 // NETWORK
 // ═══════════════════════════════════════════════
 const API_BASE = 'https://api.binance.com/api/v3/klines';
@@ -576,6 +610,16 @@ const HTF_MAP = { '5m':'1h', '15m':'4h', '1h':'4h', '4h':'1d', '1d':'1w' };
 // Унифицированные пороги силы сигнала
 const THRESHOLD_STRONG_BUY = 5;
 const THRESHOLD_BUY        = 2;
+
+// ── TRIGGER / HUNT MODE ──
+const TRIGGER_DELTA_SCORE   = 3;                // минимальный скачок score для импульса
+const TRIGGER_BUY_MIN_SCORE = 5;                // минимум для BUY
+const TRIGGER_SELL_MIN_SCORE = -5;              // максимум для SELL
+const TRIGGER_COOLDOWN_MS   = 30 * 60 * 1000;   // 30 минут
+
+// Хранилище состояния триггеров по ключу "symbol|tf"
+// { previousScore, lastTriggeredTime, status, entryPrice, atrAtTrigger, sltpAtTrigger }
+const triggerStateMap = {};
 
 // ═══ DEMO TRADING STATE ═══
 const DEMO_KEY = 'demoActiveTrade_v1';
@@ -1120,11 +1164,27 @@ function getCompositeScore(candles, htfData) {
   // ── 3. Фибо по последним 50 свечам ──
   const fib = calcFibonacciLevels(candles);
   let fibRatio = null;
-  let fibZoneOk = true; // по умолчанию не блокируем, даже если фибо нет
+  let fibRatioPrev = null;
+  let fibZoneOk = false;   // true, если ТЕКУЩАЯ цена внутри 0.5–0.618 (для отображения)
+  let fibZonePrev = false; // true, если ПРЕДЫДУЩАЯ свеча закрылась в зоне 0.5–0.618
+
   if (fib && fib.high !== fib.low) {
-    fibRatio = (price - fib.low) / (fib.high - fib.low);
-    if (fibRatio < 0.5 || fibRatio > 0.618) {
-      fibZoneOk = false;
+    const range = fib.high - fib.low;
+    if (range > 0) {
+      // Текущая свеча
+      fibRatio = (price - fib.low) / range;
+      if (fibRatio >= 0.5 && fibRatio <= 0.618) {
+        fibZoneOk = true;
+      }
+
+      // Предыдущая свеча (для логики "касания зоны")
+      if (candles.length >= 2) {
+        const prevClose = candles[candles.length - 2].close;
+        fibRatioPrev = (prevClose - fib.low) / range;
+        if (fibRatioPrev >= 0.5 && fibRatioPrev <= 0.618) {
+          fibZonePrev = true;
+        }
+      }
     }
   }
 
@@ -1354,16 +1414,58 @@ function getCompositeScore(candles, htfData) {
     baseDir = null;
   }
 
-  // Фильтр по Fibo (если можем посчитать диапазон)
-  if (baseDir && fib && fibRatio !== null && !fibZoneOk) {
+  // Фильтр и подтверждение по Fibo:
+  // 1) сначала цена должна КОСНУТЬСЯ зоны 0.5–0.618 (fibZonePrev === true),
+  // 2) затем следующая свеча должна закрыться с ИМПУЛЬСОМ в сторону сделки,
+  //    причём:
+  //      • для LONG — закрытие ВЫШЕ уровня 0.5
+  //      • для SHORT — закрытие НИЖЕ уровня 0.5
+  //    и тело свечи > средней величины тела за последние 5 свечей.
+  if (baseDir && fib && fibRatio !== null && candles.length >= 6) {
+    const lastIdx   = candles.length - 1;
+    const cur       = candles[lastIdx];
+    const prev      = candles[lastIdx - 1];
+
+    // Средний размер тела за последние 5 закрытых свечей (без текущей)
+    const bodyWindow = candles.slice(lastIdx - 5, lastIdx);
+    const avgBody = bodyWindow.reduce((sum, c) => sum + Math.abs(c.close - c.open), 0) / bodyWindow.length;
+    const curBody = Math.abs(cur.close - cur.open);
+
+    const isImpulseUp   = cur.close > cur.open && curBody > avgBody;
+    const isImpulseDown = cur.close < cur.open && curBody > avgBody;
+
+    const above0500 = cur.close > fib.level0500;
+    const below0500 = cur.close < fib.level0500;
+
+    let confirmed = false;
+
     if (baseDir === 'buy') {
-      signal = 'WAIT BUY · FIBO';
-    } else {
-      signal = 'WAIT SELL · FIBO';
+      // LONG: предыдущая свеча коснулась зоны 0.5–0.618, текущая — импульсно выше 0.5 в бычьем направлении
+      if (fibZonePrev && above0500 && isImpulseUp) {
+        confirmed = true;
+      }
+    } else if (baseDir === 'sell') {
+      // SHORT: предыдущая свеча коснулась зоны 0.5–0.618, текущая — импульсно ниже 0.5 в медвежьем направлении
+      if (fibZonePrev && below0500 && isImpulseDown) {
+        confirmed = true;
+      }
     }
-    signalClass = 'neutral';
-    factors.push({ tag:'FILTER', text:'Цена вне зоны Фибо 0.5–0.618 — вход не идеален', color:'yellow', pts:0 });
-    baseDir = null;
+
+    if (!confirmed) {
+      if (baseDir === 'buy') {
+        signal = 'WAIT BUY · FIBO CONFIRM';
+      } else if (baseDir === 'sell') {
+        signal = 'WAIT SELL · FIBO CONFIRM';
+      }
+      signalClass = 'neutral';
+      factors.push({
+        tag: 'CONFIRM',
+        text: 'Ожидание подтверждения от Fibo: сначала касание зоны 0.5–0.618, затем импульсная свеча в сторону сделки (тело > средней за 5 свечей)',
+        color: 'yellow',
+        pts: 0
+      });
+      baseDir = null;
+    }
   }
 
   // Жёсткий порог Score (снайперский)
@@ -1410,9 +1512,126 @@ function getCompositeScore(candles, htfData) {
   };
 }
 
-// Обратная совместимость: старое имя функции
-function calcCompositeSignal(candles, htfData) {
-  return getCompositeScore(candles, htfData);
+// ── TRIGGER-AWARE ОБЁРТКА: calcCompositeSignal ──
+// Делает сигналы событийными (импульсные триггеры + cooldown)
+function calcCompositeSignal(candles, htfData, triggerKey) {
+  const base = getCompositeScore(candles, htfData);
+  if (!base) return null;
+
+  const now   = Date.now();
+  const key   = triggerKey || 'DEFAULT';
+  const price = candles[candles.length - 1].close;
+
+  let state = triggerStateMap[key] || {
+    previousScore: null,
+    lastTriggeredTime: null,
+    status: 'WAITING',          // 'WAITING' | 'TRIGGERED'
+    entryPrice: null,
+    atrAtTrigger: null,
+    sltpAtTrigger: null,
+  };
+
+  const prevScore = state.previousScore;
+  const curScore  = base.score;
+  let   lastTriggeredTime = state.lastTriggeredTime;
+  let   status            = state.status;
+  let   entryPrice        = state.entryPrice;
+  let   atrAtTrigger      = state.atrAtTrigger;
+  let   sltpAtTrigger     = state.sltpAtTrigger;
+
+  // Cooldown: не перетриггерим один и тот же инструмент чаще, чем раз в 30 минут
+  const inCooldown = lastTriggeredTime && (now - lastTriggeredTime < TRIGGER_COOLDOWN_MS);
+
+  // Направление по целевым порогам
+  let dir = null; // 'buy' | 'sell'
+  if (curScore >= TRIGGER_BUY_MIN_SCORE) dir = 'buy';
+  else if (curScore <= TRIGGER_SELL_MIN_SCORE) dir = 'sell';
+
+  // Резкий импульс по score
+  let triggeredNow = false;
+  if (!inCooldown && dir && prevScore !== null && prevScore !== undefined) {
+    if (dir === 'buy') {
+      // Для BUY: текущий score стал как минимум на 3 пункта ВЫШЕ предыдущего
+      if (curScore - prevScore >= TRIGGER_DELTA_SCORE && curScore >= TRIGGER_BUY_MIN_SCORE) {
+        triggeredNow = true;
+      }
+    } else if (dir === 'sell') {
+      // Для SELL: текущий score ушёл как минимум на 3 пункта НИЖЕ предыдущего
+      if (prevScore - curScore >= TRIGGER_DELTA_SCORE && curScore <= TRIGGER_SELL_MIN_SCORE) {
+        triggeredNow = true;
+      }
+    }
+  }
+
+  // Если триггер сработал — фиксируем "зону входа"
+  if (triggeredNow) {
+    status            = 'TRIGGERED';
+    lastTriggeredTime = now;
+    entryPrice        = price;
+    atrAtTrigger      = base.atr || null;
+    sltpAtTrigger     = base.sltp || null;
+  }
+
+  // Фильтр "остывания зоны": если цена ушла дальше, чем ATR от entryPrice — зона сбрасывается
+  if (status === 'TRIGGERED' && entryPrice != null && atrAtTrigger != null) {
+    const upper = entryPrice + atrAtTrigger;
+    const lower = entryPrice - atrAtTrigger;
+    if (price > upper || price < lower) {
+      status        = 'WAITING';
+      entryPrice    = null;
+      atrAtTrigger  = null;
+      sltpAtTrigger = null;
+    }
+  }
+
+  // Обновляем хранилище состояния для ключа
+  triggerStateMap[key] = {
+    previousScore: curScore,
+    lastTriggeredTime,
+    status,
+    entryPrice,
+    atrAtTrigger,
+    sltpAtTrigger,
+  };
+
+  // UI‑статусы
+  let uiSignalText  = 'WAITING FOR SETUP';
+  let uiSignalClass = 'neutral';
+  if (status === 'TRIGGERED' && dir === 'buy') {
+    uiSignalText  = '⚡ TRIGGERED: ENTRY ZONE (LONG)';
+    uiSignalClass = 'buy';
+  } else if (status === 'TRIGGERED' && dir === 'sell') {
+    uiSignalText  = '⚡ TRIGGERED: ENTRY ZONE (SHORT)';
+    uiSignalClass = 'sell';
+  }
+
+  // ── TELEGRAM ALERT ──
+  if (status === 'TRIGGERED' && dir && canSendAlert(key)) {
+    const alertSymbol = key.split('|')[0] || key;
+    const alertPrice = fmt(price);
+    const alertScore = `${base.score}/${base.SCOREMAX}`;
+    const alertSL = base.sltp && base.sltp.sl ? fmt(base.sltp.sl) : '—';
+    const alertTPs = base.sltp && base.sltp.tps ? base.sltp.tps.map(t => fmt(t)).join(', ') : '—';
+    const alertMsg = `⚡️ СИГНАЛ: ${alertSymbol}\n💰 Цена: ${alertPrice}\n📊 Сила: ${alertScore}\n📉 СЛ/ТП: ${alertSL} / ${alertTPs}`;
+    sendTelegramAlert(alertMsg);
+  }
+
+  // В режиме Охоты:
+  // - счёт (score) и факторы остаются как есть
+  // - НО "сигнал" для UI и радаров теперь событийный, а не статичный
+  const sig = {
+    ...base,
+    signal: uiSignalText,
+    signalClass: uiSignalClass,
+    triggerStatusRaw: status,
+    triggerKey: key,
+    triggerInCooldown: !!inCooldown,
+    triggerEntryPrice: entryPrice,
+    triggerAtr: atrAtTrigger,
+    triggerSLTP: sltpAtTrigger,
+  };
+
+  return sig;
 }
 
 // ═══════════════════════════════════════════════
@@ -1431,8 +1650,11 @@ function renderAnalysisPanel(sig, candles) {
 
   const price   = candles[candles.length-1].close;
   const dotColor= sig.signalClass==='buy' ? '#0ecb81' : sig.signalClass==='sell' ? '#f6465d' : '#848e9c';
-  const isWait = sig.signal === 'WAIT BUY' || sig.signal === 'WAIT SELL';
-  const signalDisplayColor = isWait ? 'var(--yellow)' : (sig.signalClass==='buy'?'var(--green)':sig.signalClass==='sell'?'var(--red)':'var(--muted)');
+  const isTriggered = sig.triggerStatusRaw === 'TRIGGERED';
+  const isWaitingSetup = !isTriggered;
+  const signalDisplayColor = isTriggered
+    ? (sig.signalClass==='buy' ? 'var(--green)' : sig.signalClass==='sell' ? 'var(--red)' : 'var(--muted)')
+    : 'var(--muted)';
   const scoreColor = sig.score > 0 ? 'var(--green)' : sig.score < 0 ? 'var(--red)' : 'var(--muted)';
   const scorePct   = ((sig.score + sig.SCOREMAX) / (sig.SCOREMAX * 2) * 100).toFixed(1);
 
@@ -1498,11 +1720,14 @@ function renderAnalysisPanel(sig, candles) {
     atrSubStr = (sig.atr / price * 100).toFixed(2) + '% волат.';
   }
 
-  // Управление FAST-кнопками в калькуляторе на основе RR-плана
+  // Управление FAST-кнопками в калькуляторе:
+  // только когда TRIGGER активен и RR-план валиден
   try {
     const fastBox = document.getElementById('fast-buttons');
     if (fastBox) {
-      const ok = sig.sltp && sig.sltp.isValidRR !== false;
+      const ok = sig.triggerStatusRaw === 'TRIGGERED'
+        && sig.sltp
+        && sig.sltp.isValidRR !== false;
       fastBox.style.display = ok ? 'grid' : 'none';
     }
   } catch {}
@@ -1519,7 +1744,7 @@ function renderAnalysisPanel(sig, candles) {
 
   // Factors
   const factorsHTML = sig.factors.map(f => {
-    const c = f.color==='green'?'var(--green)':f.color==='red'?'var(--red)':'var(--muted)';
+    const c = f.color==='green'?'var(--green)':f.color==='red'?'var(--red)':'var(--border)';
     const s = f.pts>0?`+${f.pts}`:f.pts<0?`${f.pts}`:'±0';
     return `<div class="ap-factor-row">
       <span class="ap-factor-tag">${f.tag}</span>
@@ -1530,7 +1755,8 @@ function renderAnalysisPanel(sig, candles) {
 
   // SL/TP — динамический рендер по массиву ТП
   let sltpHTML = '';
-  const st = sig.sltp;
+  // SL/TP‑план показываем только в режиме TRIGGERED
+  const st = sig.triggerStatusRaw === 'TRIGGERED' ? sig.sltp : null;
   if (st && Array.isArray(st.tps) && st.tps.length > 0) {
     const basePrice = price;
     const firstTp   = st.tps[0];
@@ -1589,7 +1815,7 @@ function renderAnalysisPanel(sig, candles) {
   panel.innerHTML = `
     <div class="ap-top">
       <div class="ap-signal-box">
-        <div class="ap-signal-label">ИТОГОВЫЙ СИГНАЛ</div>
+        <div class="ap-signal-label">ОХОТА · TRIGGER LOGIC</div>
         <div class="ap-signal-main">
           <div class="ap-signal-dot" style="background:${dotColor};box-shadow:0 0 8px ${dotColor};"></div>
           <span style="color:${signalDisplayColor};">${sig.signal}</span>
@@ -1696,7 +1922,7 @@ async function autoUpdateTick() {
 
     // Update EMA last point (lightweight: only update last value)
     if (_lastCandles && _lastCandles.length > 0 && emaSeries20) {
-      // splice the latest candle data into our cache for correct EMA tail
+      // splice latest candle data into our cache for correct EMA tail
       const patchedCloses = _lastCandles.map(c => c.close);
       patchedCloses[patchedCloses.length - 1] = currentPrice;
       const e20arr = calcEMAArray(patchedCloses, 20);
@@ -1707,13 +1933,26 @@ async function autoUpdateTick() {
       if (e50arr[li]  !== null) try { emaSeries50.update( { time: tickCandle.time, value: e50arr[li]  }); } catch {}
       if (e200arr[li] !== null) try { emaSeries200.update({ time: tickCandle.time, value: e200arr[li] }); } catch {}
     }
-
+    
     // Update header price
     lastKnownPrice = currentPrice;
     document.getElementById('header-price').textContent = fmt(currentPrice);
     const entryEl = document.getElementById('c-entry');
     if (entryEl && document.activeElement !== entryEl)
       entryEl.value = currentPrice.toFixed(priceDecimals(currentPrice));
+
+    // ── Обновление визуальных уровней (Fibo + S/R) ──
+    if (_lastCandles && _lastCandles.length > 35) {
+      clearVisuals();
+      try {
+        const fib = calcFibonacciLevels(_lastCandles);
+        if (fib) drawFiboLevels(fib, currentPrice);
+      } catch(e) { /* silent */ }
+      try {
+        const sr = calcSupportResistance(_lastCandles);
+        if (sr) drawSupportResistance(sr);
+      } catch(e) { /* silent */ }
+    }
 
     // ── Active trade: update PnL and check SL/TP ──
     if (activeTrade) {
@@ -1788,6 +2027,9 @@ async function loadChart() {
   // Stop any running update loop immediately (prevent race conditions)
   stopAutoUpdate();
 
+  // Очищаем все визуальные уровни и зоны (Fibo, S/R)
+  clearVisuals();
+
   // Clear stale EMA lines
   if (emaSeries20)  emaSeries20.setData([]);
   if (emaSeries50)  emaSeries50.setData([]);
@@ -1852,10 +2094,24 @@ async function loadChart() {
     if (activeTrade) updateActiveTradePnL(activeTrade, last.close);
     if (htfData) htfStatus.innerHTML = `<span style="color:var(--muted);">HTF ${htfData.tf} ✓</span>`;
 
-    const sig = getCompositeScore(candles, htfData);
+    const sig = calcCompositeSignal(candles, htfData, `${symbol}|${tf}`);
     lastSignal = sig;
     renderAnalysisPanel(sig, candles);
     overlay.classList.add('hidden');
+
+    // ── ВИЗУАЛИЗАЦИЯ ФИБОНАЧЧИ ──
+    try {
+      if (typeof drawFiboLevels === 'function' && sig && sig.fib) {
+        drawFiboLevels(sig.fib, candles[candles.length-1].close);
+      }
+    } catch(e) { console.warn('Fibo draw error', e); }
+
+    // ── ВИЗУАЛИЗАЦИЯ S/R ──
+    try {
+      if (typeof drawSupportResistance === 'function' && sig && sig.sr) {
+        drawSupportResistance(sig.sr);
+      }
+    } catch(e) { console.warn('SR draw error', e); }
 
     // Launch unified auto-update loop
     startAutoUpdate(symbol, tf);
@@ -1899,10 +2155,10 @@ async function loadRadar() {
         htfData = await fetchHTFConfirmation(sym, radarTf);
       } catch { htfData = null; }
 
-      const sig = getCompositeScore(candles, htfData);
+      const sig = calcCompositeSignal(candles, htfData, `${sym}|${radarTf}`);
 
       // Агрессивный фильтр по RR: в радар попадают только сетапы с RR >= 1:2
-      if (sig && sig.sltp && sig.sltp.isValidRR === true) {
+      if (sig && sig.triggerStatusRaw === 'TRIGGERED' && sig.sltp && sig.sltp.isValidRR === true) {
         results.push({ sym, last: candles[candles.length-1].close, sig });
       }
     } catch {
@@ -2103,6 +2359,68 @@ function removeTradeLines() {
   priceLines = {};
 }
 
+// ═══════════════════════════════════════════════
+// VISUAL LEVELS (FIBO + S/R) MANAGEMENT
+// ═══════════════════════════════════════════════
+let visualLines = [];
+
+function clearVisuals() {
+  if (!visualLines || !visualLines.length) return;
+  visualLines.forEach(obj => {
+    if (obj && obj.ref) {
+      try { candleSeries.removePriceLine(obj.ref); } catch {}
+    }
+  });
+  visualLines = [];
+}
+
+function drawFiboLevels(fibData, price) {
+  if (!fibData || !candleSeries) return;
+  // Пунктирные тонкие линии 0.382, 0.5, 0.618
+  const levels = [
+    { val: fibData.level0382, color: '#a78bfa', label: 'FIB 0.382' },
+    { val: fibData.level0500, color: '#f0b90b', label: 'FIB 0.5' },
+    { val: fibData.level0618, color: '#6c7fff', label: 'FIB 0.618' },
+  ];
+  levels.forEach(lvl => {
+    const line = candleSeries.createPriceLine({
+      price: lvl.val,
+      color: lvl.color,
+      lineWidth: 1,
+      lineStyle: 2, // пунктир
+      axisLabelVisible: true,
+      title: lvl.label,
+    });
+    visualLines.push({ type: 'line', ref: line });
+  });
+}
+
+function drawSupportResistance(srData) {
+  if (!srData || !candleSeries) return;
+  if (srData.nearestSupport) {
+    const supLine = candleSeries.createPriceLine({
+      price: srData.nearestSupport,
+      color: '#0ecb81',
+      lineWidth: 2,
+      lineStyle: 0,
+      axisLabelVisible: true,
+      title: 'SUPPORT',
+    });
+    visualLines.push({ type: 'line', ref: supLine });
+  }
+  if (srData.nearestResistance) {
+    const resLine = candleSeries.createPriceLine({
+      price: srData.nearestResistance,
+      color: '#f6465d',
+      lineWidth: 2,
+      lineStyle: 0,
+      axisLabelVisible: true,
+      title: 'RESISTANCE',
+    });
+    visualLines.push({ type: 'line', ref: resLine });
+  }
+}
+
 // ── Switch UI between Calculator and Active Trade panel ──
 function showCalcPanel() {
   document.getElementById('calc-panel').style.display = 'block';
@@ -2116,7 +2434,7 @@ function showActiveTradePanel(trade) {
   panel.style.flexDirection = 'column';
   panel.style.height = '100%';
 
-  const coin = trade.symbol.replace('USDT', '');
+  const coin = trade.symbol.replace('USDT','');
   const dirColor = trade.side === 'LONG' ? 'var(--green)' : 'var(--red)';
   const dirIcon  = trade.side === 'LONG' ? '📈' : '📉';
 
