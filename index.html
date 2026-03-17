@@ -539,27 +539,17 @@ const lastAlertTime = {}; // { 'BTCUSDT': timestamp } — защита от сп
 
 async function sendTelegramAlert(message) {
   try {
-    const chatId = String(TELEGRAM_CHAT_ID).trim();
-    const text = encodeURIComponent(message);
-    const tgUrl = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage?chat_id=${chatId}&text=${text}`;
-    // NOTE: If using cors-anywhere, you must first visit https://cors-anywhere.herokuapp.com/corsdemo
-    // and click "Request temporary access" to activate the proxy for your IP.
-    const proxyUrl = `https://cors-anywhere.herokuapp.com/${tgUrl}`;
-    console.log('Sending to URL:', proxyUrl);
-    const res = await fetch(proxyUrl, {
-      headers: { 'X-Requested-With': 'XMLHttpRequest' }
+    const GOOGLE_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbxFsCMpmDqJo2KdEDEiz5OPOw_6-aWLzNYvokrwPfHxp-W2dUalK8V1SBffkWmLdwZV/exec';
+    console.log('Sending Telegram alert via Google Script...');
+    await fetch(GOOGLE_SCRIPT_URL, {
+      method: 'POST',
+      mode: 'no-cors',
+      body: JSON.stringify({ message: message }),
+      headers: { 'Content-Type': 'application/json' }
     });
-    if (!res.ok) {
-      const errText = await res.text();
-      console.error('Telegram Error:', res.status, errText);
-    } else {
-      console.log('Telegram alert sent successfully');
-    }
+    console.log('Telegram alert sent successfully');
   } catch(e) {
     console.error('Telegram Error:', e);
-    if (e.message && e.message !== 'Failed to fetch') {
-      console.error('Telegram Error Details:', e.message);
-    }
   }
 }
 
