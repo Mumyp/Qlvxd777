@@ -541,11 +541,12 @@ async function sendTelegramAlert(message) {
   try {
     const GOOGLE_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbxFsCMpmDqJo2KdEDEiz5OPOw_6-aWLzNYvokrwPfHxp-W2dUalK8V1SBffkWmLdwZV/exec';
     console.log('Sending Telegram alert via Google Script...');
+    const formData = new FormData();
+    formData.append('message', message);
     await fetch(GOOGLE_SCRIPT_URL, {
       method: 'POST',
       mode: 'no-cors',
-      body: JSON.stringify({ message: message }),
-      headers: { 'Content-Type': 'application/json' }
+      body: formData
     });
     console.log('Telegram alert sent successfully');
   } catch(e) {
