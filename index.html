@@ -542,16 +542,25 @@ async function sendTelegramAlert(message) {
     const chatId = String(TELEGRAM_CHAT_ID).trim();
     const text = encodeURIComponent(message);
     const tgUrl = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage?chat_id=${chatId}&text=${text}`;
-    const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(tgUrl)}`;
+    // NOTE: If using cors-anywhere, you must first visit https://cors-anywhere.herokuapp.com/corsdemo
+    // and click "Request temporary access" to activate the proxy for your IP.
+    const proxyUrl = `https://cors-anywhere.herokuapp.com/${tgUrl}`;
     console.log('Sending to URL:', proxyUrl);
-    const res = await fetch(proxyUrl);
+    const res = await fetch(proxyUrl, {
+      headers: { 'X-Requested-With': 'XMLHttpRequest' }
+    });
     if (!res.ok) {
       const errText = await res.text();
       console.error('Telegram Error:', res.status, errText);
     } else {
       console.log('Telegram alert sent successfully');
     }
-  } catch(e) { console.error('Telegram Error:', e); }
+  } catch(e) {
+    console.error('Telegram Error:', e);
+    if (e.message && e.message !== 'Failed to fetch') {
+      console.error('Telegram Error Details:', e.message);
+    }
+  }
 }
 
 function canSendAlert(symbol) {
