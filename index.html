@@ -287,16 +287,12 @@
       <div class="block-header">
         <span class="block-icon">📡</span>
         <span class="block-title">Рыночный Радар</span>
-      </div>
-      <div class="radar-tabs">
-        <button class="tab-btn active" data-tf="5m">5m · Скальп</button>
-        <button class="tab-btn" data-tf="1h">1h · День</button>
-        <button class="tab-btn" data-tf="4h">4h · Тренд</button>
+        <span id="radar-loading" style="margin-left:auto;font-size:10px;color:var(--muted);">Scanning...</span>
       </div>
       <div class="radar-body">
         <table class="radar-table">
-          <thead><tr><th>Монета</th><th>RSI</th><th>EMA</th><th>Объём</th><th>Сигнал</th></tr></thead>
-          <tbody id="radar-body"><tr><td colspan="5" style="text-align:center;color:var(--muted);padding:20px;">Загрузка...</td></tr></tbody>
+          <thead><tr><th>Монета</th><th>ТФ</th><th>RSI</th><th>EMA</th><th>Объём</th><th>Сигнал</th></tr></thead>
+          <tbody id="radar-body"><tr><td colspan="6" style="text-align:center;color:var(--muted);padding:20px;">Загрузка...</td></tr></tbody>
         </table>
       </div>
       <div class="radar-footer">
@@ -535,7 +531,7 @@
 // ═══════════════════════════════════════════════
 const TELEGRAM_BOT_TOKEN = '8798928207:AAF1cb0UPfi1k2-uajk-HkkKnFGm3uVgxC0';
 const TELEGRAM_CHAT_ID = '1086359928';
-const lastAlertTime = {}; // { 'BTCUSDT': timestamp } — защита от спама (15 мин)
+const lastAlertTime = {}; // { 'BTCUSDT|5m': timestamp } — защита от спама (60 мин), учитывает ТФ
 
 async function sendTelegramAlert(message) {
   try {
@@ -554,11 +550,13 @@ async function sendTelegramAlert(message) {
   }
 }
 
-function canSendAlert(symbol) {
+function canSendAlert(key) {
+  // key format: `${symbol}|${tf}` (e.g. BTCUSDT|5m), to track alerts per TF separately
   const now = Date.now();
-  const last = lastAlertTime[symbol] || 0;
-  if (now - last < 15 * 60 * 1000) return false; // 15 минут кулдаун
-  lastAlertTime[symbol] = now;
+  const last = lastAlertTime[key] || 0;
+  const COOLDOWN_MS = 60 * 60 * 1000; // 60 минут
+  if (now - last < COOLDOWN_MS) return false;
+  lastAlertTime[key] = now;
   return true;
 }
 
@@ -600,25 +598,15 @@ async function fetchKlines(symbol, interval, limit = 100) {
 // ═══════════════════════════════════════════════
 // CHART STATE
 // ═══════════════════════════════════════════════
-const RADAR_COINS = ['BTCUSDT','ETHUSDT','SOLUSDT','XRPUSDT','BNBUSDT','DOGEUSDT','ADAUSDT','AVAXUSDT'];
+const RADAR_COINS = ['BTCUSDT','ETHUSDT','SOLUSDT','XRPUSDT','BNBUSDT','DOGEUSDT'];
 let chart = null, candleSeries = null;
 let emaSeries20 = null, emaSeries50 = null, emaSeries200 = null;
 let radarTf = '5m', radarTimer = null;
+let radarRunning = false;
 
 const HTF_MAP = { '5m':'1h', '15m':'4h', '1h':'4h', '4h':'1d', '1d':'1w' };
 
-// Унифицированные пороги силы сигнала
-const THRESHOLD_STRONG_BUY = 5;
-const THRESHOLD_BUY        = 2;
-
-// ── TRIGGER / HUNT MODE ──
-const TRIGGER_DELTA_SCORE   = 3;                // минимальный скачок score для импульса
-const TRIGGER_BUY_MIN_SCORE = 5;                // минимум для BUY
-const TRIGGER_SELL_MIN_SCORE = -5;              // максимум для SELL
-const TRIGGER_COOLDOWN_MS   = 30 * 60 * 1000;   // 30 минут
-
 // Хранилище состояния триггеров по ключу "symbol|tf"
-// { previousScore, lastTriggeredTime, status, entryPrice, atrAtTrigger, sltpAtTrigger }
 const triggerStateMap = {};
 
 // ═══ DEMO TRADING STATE ═══
@@ -638,24 +626,7 @@ function persistActiveTrade(t) {
   else   localStorage.removeItem(DEMO_KEY);
 }
 
-// Task 2: Hysteresis — prevents signal flickering on micro-oscillations
-// Signal only changes state when score crosses exit thresholds
-let lastSignalState = 'neutral'; // 'buy' | 'sell' | 'neutral'
 
-function applyHysteresis(score) {
-  // Entry thresholds: need score >= 2 to become BUY, <= -2 for SELL
-  // Exit thresholds: BUY exits only at score <= 1, SELL exits at score >= -1
-  if (lastSignalState === 'buy') {
-    if (score <= 1) lastSignalState = 'neutral';       // exit BUY → Neutral
-  } else if (lastSignalState === 'sell') {
-    if (score >= -1) lastSignalState = 'neutral';      // exit SELL → Neutral
-  } else {
-    // neutral state: enter BUY or SELL only at strong thresholds
-    if (score >= 2)  lastSignalState = 'buy';
-    if (score <= -2) lastSignalState = 'sell';
-  }
-  return lastSignalState;
-}
 
 // UTC+2 offset in seconds
 const UTC_OFFSET_SEC = 2 * 3600; // UTC+2
@@ -982,9 +953,11 @@ function distPct(a, b) { return Math.abs((a - b) / a * 100); }
 // ATR, рассчитанный при последнем вызове calcCompositeSignal (для getTradePlan)
 let _lastAtrForPlan = null;
 
-// Базовая логика расчёта SL/TP (как было раньше — ATR / проценты)
-function calcSLTP(score, sr, price, atr) {
-  const isBull = score >= 1, isBear = score <= -1;
+// Базовая логика расчёта SL/TP
+// side: 'LONG' | 'SHORT'
+function calcSLTP(side, sr, price, atr) {
+  const isBull = side === 'LONG';
+  const isBear = side === 'SHORT';
   if (!isBull && !isBear) return null;
 
   // ── ATR multipliers for dynamic SL/TP ──
@@ -1054,11 +1027,10 @@ function calcSLTP(score, sr, price, atr) {
 }
 
 // Унифицированный торговый план для интерфейса и FAST-сделок
-// Возвращает:
-// { sl, tps[], slNote, slPct, rr[], isValidRR }
-function getTradePlan(score, sr, price, entryPrice) {
+// side: 'LONG' | 'SHORT'
+function getTradePlan(side, sr, price, entryPrice) {
   const atr = _lastAtrForPlan;
-  const core = calcSLTP(score, sr, price, atr);
+  const core = calcSLTP(side, sr, price, atr);
   if (!core) return null;
 
   const basePrice = entryPrice || price;
@@ -1094,24 +1066,25 @@ function getTradePlan(score, sr, price, entryPrice) {
 }
 
 // ═══════════════════════════════════════════════
-// ── COMPOSITE SIGNAL ENGINE v3 ──
-// Единый алгоритм:
-// 1) Считаем все факторы (RSI, EMA, MACD, S/R, Vol, Patterns, Fibo, HTF, ATR)
-// 2) Строим общий score
-// 3) Применяем фильтры: HTF-trend, волатильность (ATR), Fibo-зона, порог Score
+// ── HIERARCHICAL FILTERING ENGINE v4 ──
+// Шаг 1: Фильтр тренда HTF
+// Шаг 2: Зона интереса (Fibo 0.5-0.618 или S/R)
+// Шаг 3: Подтверждение/Триггер (импульс + объем)
 // ═══════════════════════════════════════════════
-function getCompositeScore(candles, htfData) {
-  // Базовая проверка: достаточно ли свечей вообще
+function getTradeSetup(candles, htfData) {
+  // Базовая проверка
   if (!candles || candles.length < 35) return null;
 
   const closes = candles.map(c => c.close);
   const price  = closes[closes.length - 1];
+  const prev   = candles.length >= 2 ? candles[candles.length - 2] : null;
 
-  // ── 1. Базовые индикаторы (локальные, без фильтров) ──
+  // Расчёт индикаторов для UI
   const rsi  = calcRSI(closes, 14);
   const macd = calcMACD(closes);
   const ema  = calcEMATrend(closes);
-
+  const vol  = calcVolumeSignal(candles, 20) || { ratio: null, spike: false, bullish: false };
+  const fib  = calcFibonacciLevels(candles);
   const srRaw = calcSupportResistance(candles) || {};
   const sr = {
     nearestSupport:    srRaw.nearestSupport    ?? null,
@@ -1119,519 +1092,226 @@ function getCompositeScore(candles, htfData) {
     supTouches:        srRaw.supTouches        ?? 0,
     resTouches:        srRaw.resTouches        ?? 0,
   };
-
-  const vol  = calcVolumeSignal(candles, 20) || { ratio: null, spike: false, bullish: false };
   const patterns = Array.isArray(detectPatterns(candles)) ? detectPatterns(candles) : [];
 
-  // ── 2. ATR + волатильность ──
-  const ATR_PERIOD = 14;
-  let atr = null;
-  let atrAvg100 = null;
-  let volatilityOK = true;
-  if (candles.length >= ATR_PERIOD + 2) {
-    const trs = [];
-    for (let i = 1; i < candles.length; i++) {
-      const high  = candles[i].high;
-      const low   = candles[i].low;
-      const prevC = candles[i - 1].close;
-      trs.push(Math.max(high - low, Math.abs(high - prevC), Math.abs(low - prevC)));
-    }
-    if (trs.length >= ATR_PERIOD) {
-      let atrVal = trs.slice(0, ATR_PERIOD).reduce((a, b) => a + b, 0) / ATR_PERIOD;
-      const atrs = [atrVal];
-      for (let i = ATR_PERIOD; i < trs.length; i++) {
-        atrVal = (atrVal * (ATR_PERIOD - 1) + trs[i]) / ATR_PERIOD;
-        atrs.push(atrVal);
-      }
-      atr = atrs[atrs.length - 1];
-      const historyLen = Math.min(100, atrs.length - 1);
-      if (historyLen > 0) {
-        const histSlice = atrs.slice(atrs.length - 1 - historyLen, atrs.length - 1);
-        atrAvg100 = histSlice.reduce((a, b) => a + b, 0) / historyLen;
-        volatilityOK = atr >= atrAvg100;
-      } else {
-        atrAvg100 = atr;
-      }
-    }
-  }
-  if (atr === null) {
-    // fallback: только текущее ATR без истории — значит, фильтр волатильности не жёсткий
-    atr = calcATR(candles, ATR_PERIOD);
-    atrAvg100 = atr;
-    volatilityOK = true;
+  // ATR
+  const atr = calcATR(candles, 14);
+  _lastAtrForPlan = atr;
+
+  // HTF тренд
+  let htfTrend = 0; // 1 = бычий, -1 = медвежий, 0 = смешанный
+  let htfLabel = '—';
+  if (htfData && htfData.ema) {
+    if (htfData.ema.aboveAll) htfTrend = 1;
+    else if (htfData.ema.belowAll) htfTrend = -1;
+    htfLabel = `${htfData.tf} · ${htfData.ema.label}`;
   }
 
-  // ── 3. Фибо по последним 50 свечам ──
-  const fib = calcFibonacciLevels(candles);
+  // ═══ ШАГ 1: ФИЛЬТР ТРЕНДА HTF ═══
+  const filter1 = {
+    name: 'Трендовый фильтр',
+    passed: true,
+    status: 'ПРОЙДЕН',
+    detail: htfTrend === 0 ? 'Смешанный тренд — фильтр пропущен' : htfTrend === 1 ? 'Бычий тренд HTF — SELL заблокирован' : 'Медвежий тренд HTF — BUY заблокирован',
+    blockedSide: htfTrend === 1 ? 'SHORT' : htfTrend === -1 ? 'LONG' : null
+  };
+  if (htfTrend !== 0) {
+    filter1.status = htfTrend === 1 ? 'LONG разрешён' : 'SHORT разрешён';
+  }
+
+  // ═══ ШАГ 2: ЗОНА ИНТЕРЕСА ═══
+  const filter2 = {
+    name: 'Зона интереса',
+    passed: false,
+    status: 'НЕ В ЗОНЕ',
+    detail: 'Цена в пустоте',
+    zoneType: null // 'FIBO' | 'SR'
+  };
+
+  // Проверка Fibo зоны 0.5-0.618
   let fibRatio = null;
-  let fibRatioPrev = null;
-  let fibZoneOk = false;   // true, если ТЕКУЩАЯ цена внутри 0.5–0.618 (для отображения)
-  let fibZonePrev = false; // true, если ПРЕДЫДУЩАЯ свеча закрылась в зоне 0.5–0.618
-
+  let inFiboZone = false;
   if (fib && fib.high !== fib.low) {
     const range = fib.high - fib.low;
-    if (range > 0) {
-      // Текущая свеча
-      fibRatio = (price - fib.low) / range;
-      if (fibRatio >= 0.5 && fibRatio <= 0.618) {
-        fibZoneOk = true;
-      }
-
-      // Предыдущая свеча (для логики "касания зоны")
-      if (candles.length >= 2) {
-        const prevClose = candles[candles.length - 2].close;
-        fibRatioPrev = (prevClose - fib.low) / range;
-        if (fibRatioPrev >= 0.5 && fibRatioPrev <= 0.618) {
-          fibZonePrev = true;
-        }
-      }
-    }
+    fibRatio = (price - fib.low) / range;
+    inFiboZone = fibRatio >= 0.5 && fibRatio <= 0.618;
   }
 
-  // ── 4. HTF‑данные как фактор (но ещё НЕ фильтр) ──
-  let htfScore = 0;
-  let htfTrend = 0;  // +1 = bullish HTF, -1 = bearish, 0 = neutral
-  let htfFilterActive = false;
-  let htfFilterNote = '';
-  let htfText = '—';
-
-  if (htfData) {
-    if (htfData.ema) {
-      if (htfData.ema.aboveAll) { htfScore += 1; htfTrend = 1; }
-      if (htfData.ema.belowAll) { htfScore -= 1; htfTrend = -1; }
-    }
-    if (htfData.rsi !== null && htfData.rsi !== undefined) {
-      if (htfData.rsi < 40) htfScore += 1;
-      if (htfData.rsi > 60) htfScore -= 1;
-    }
-    if (htfData.macd) {
-      if (htfData.macd.bullish)  htfScore += 0.5;
-      if (!htfData.macd.bullish) htfScore -= 0.5;
-    }
-    htfScore = Math.round(htfScore);
-    const trendLabel = htfData.ema ? htfData.ema.label : '—';
-    const htfRsi = (htfData.rsi !== null && htfData.rsi !== undefined) ? htfData.rsi.toFixed(1) : '—';
-    htfText  = `${htfData.tf} · ${trendLabel} · RSI ${htfRsi}`;
-  }
-
-  // ── 5. Считаем общий score из всех факторов ──
-  let score = 0;
-  const factors = [];
-
-  // RSI (±2)
-  if (rsi !== null && rsi !== undefined) {
-    if      (rsi < 25) { score += 2; factors.push({ tag:'RSI', text:`${rsi.toFixed(1)} — сильно перепродан`, color:'green', pts:+2 }); }
-    else if (rsi < 35) { score += 1; factors.push({ tag:'RSI', text:`${rsi.toFixed(1)} — перепродан`,        color:'green', pts:+1 }); }
-    else if (rsi > 75) { score -= 2; factors.push({ tag:'RSI', text:`${rsi.toFixed(1)} — сильно перекуплен`, color:'red',   pts:-2 }); }
-    else if (rsi > 65) { score -= 1; factors.push({ tag:'RSI', text:`${rsi.toFixed(1)} — перекуплен`,        color:'red',   pts:-1 }); }
-    else               { factors.push({ tag:'RSI', text:`${rsi.toFixed(1)} — нейтральный`,                   color:'muted', pts:0  }); }
-  }
-
-  // EMA (±2)
-  if (ema) {
-    if (ema.aboveAll && ema.golden) {
-      score += 2;
-      factors.push({ tag:'EMA', text:`Бычий тренд · цена выше EMA20/50/200`, color:'green', pts:+2 });
-    } else if (ema.aboveAll) {
-      score += 1;
-      factors.push({ tag:'EMA', text:`Цена выше EMA20 и EMA50`, color:'green', pts:+1 });
-    } else if (ema.belowAll && ema.death) {
-      score -= 2;
-      factors.push({ tag:'EMA', text:`Медвежий тренд · цена ниже EMA20/50/200`, color:'red', pts:-2 });
-    } else if (ema.belowAll) {
-      score -= 1;
-      factors.push({ tag:'EMA', text:`Цена ниже EMA20 и EMA50`, color:'red', pts:-1 });
-    } else {
-      factors.push({ tag:'EMA', text:`${ema.label} — смешанные сигналы`, color:'muted', pts:0 });
-    }
-  }
-
-  // MACD (±1, +1 за кросс)
-  if (macd) {
-    if (macd.crossBull)              { score += 2; factors.push({ tag:'MACD', text:`Бычье пересечение — смена импульса ↑`,    color:'green', pts:+2 }); }
-    else if (macd.crossBear)         { score -= 2; factors.push({ tag:'MACD', text:`Медвежье пересечение — смена импульса ↓`, color:'red',   pts:-2 }); }
-    else if (macd.bullish && macd.rising)  { score += 1; factors.push({ tag:'MACD', text:`Гистограмма растёт выше нуля`,       color:'green', pts:+1 }); }
-    else if (!macd.bullish && !macd.rising){ score -= 1; factors.push({ tag:'MACD', text:`Гистограмма падает ниже нуля`,       color:'red',   pts:-1 }); }
-    else                                    { factors.push({ tag:'MACD', text:`Нейтральный импульс`,                           color:'muted', pts:0  }); }
-  }
-
-  // S/R (до ±2)
+  // Проверка близости к S/R (в пределах 3%)
   const PROX = 3.0;
-  if (sr.nearestSupport || sr.nearestResistance) {
-    const dSup = sr.nearestSupport    ? distPct(price, sr.nearestSupport)    : 999;
-    const dRes = sr.nearestResistance ? distPct(price, sr.nearestResistance) : 999;
-    const atSup = sr.nearestSupport    && price > sr.nearestSupport    && dSup < PROX;
-    const atRes = sr.nearestResistance && price < sr.nearestResistance && dRes < PROX;
-    if (atSup) {
-      score += 2;
-      factors.push({ tag:'S/R', text:`У поддержки ${fmt(sr.nearestSupport)} (${dSup.toFixed(1)}%, ${sr.supTouches}x)`, color:'green', pts:+2 });
-    } else if (atRes) {
-      score -= 2;
-      factors.push({ tag:'S/R', text:`У сопротивления ${fmt(sr.nearestResistance)} (${dRes.toFixed(1)}%, ${sr.resTouches}x)`, color:'red', pts:-2 });
-    } else if (sr.nearestSupport && sr.nearestResistance) {
-      const ratio = dSup / (dSup + dRes);
-      if (ratio < 0.35) {
-        score += 1;
-        factors.push({ tag:'S/R', text:`Ближе к поддержке ${fmt(sr.nearestSupport)}`, color:'green', pts:+1 });
-      } else if (ratio > 0.65) {
-        score -= 1;
-        factors.push({ tag:'S/R', text:`Ближе к сопротивлению ${fmt(sr.nearestResistance)}`, color:'red', pts:-1 });
-      } else {
-        factors.push({ tag:'S/R', text:`Между уровнями S:${fmt(sr.nearestSupport)} R:${fmt(sr.nearestResistance)}`, color:'muted', pts:0 });
-      }
-    }
+  const dSup = sr.nearestSupport ? distPct(price, sr.nearestSupport) : 999;
+  const dRes = sr.nearestResistance ? distPct(price, sr.nearestResistance) : 999;
+  const nearSupport = sr.nearestSupport && price > sr.nearestSupport && dSup < PROX;
+  const nearResistance = sr.nearestResistance && price < sr.nearestResistance && dRes < PROX;
+
+  if (inFiboZone) {
+    filter2.passed = true;
+    filter2.status = 'В ЗОНЕ';
+    filter2.detail = `Цена в зоне Фибо 0.5–0.618 (${(fibRatio * 100).toFixed(1)}%)`;
+    filter2.zoneType = 'FIBO';
+  } else if (nearSupport) {
+    filter2.passed = true;
+    filter2.status = 'У УРОВНЯ';
+    filter2.detail = `Цена у поддержки ${fmt(sr.nearestSupport)} (${dSup.toFixed(1)}%)`;
+    filter2.zoneType = 'SR';
+  } else if (nearResistance) {
+    filter2.passed = true;
+    filter2.status = 'У УРОВНЯ';
+    filter2.detail = `Цена у сопротивления ${fmt(sr.nearestResistance)} (${dRes.toFixed(1)}%)`;
+    filter2.zoneType = 'SR';
   }
 
-  // Volume (±1)
-  if (vol && vol.ratio !== null && vol.ratio !== undefined) {
-    if (vol.spike) {
-      if (vol.bullish) {
-        score += 1;
-        factors.push({ tag:'VOL', text:`×${vol.ratio.toFixed(1)} — бычий всплеск объёма`, color:'green', pts:+1 });
-      } else {
-        score -= 1;
-        factors.push({ tag:'VOL', text:`×${vol.ratio.toFixed(1)} — медвежий всплеск объёма`, color:'red', pts:-1 });
-      }
+  // ═══ ШАГ 3: ПОДТВЕРЖДЕНИЕ / ТРИГГЕР ═══
+  const filter3 = {
+    name: 'Триггер подтверждения',
+    passed: false,
+    status: 'НЕТ ИМПУЛЬСА',
+    detail: 'Ожидание импульса и объёма',
+    side: null
+  };
+
+  if (filter2.passed && prev) {
+    const curCandle = candles[candles.length - 1];
+    const prevCandle = prev;
+    const impulseUp = curCandle.close > prevCandle.close;
+    const impulseDown = curCandle.close < prevCandle.close;
+    const hasVolume = vol.ratio !== null && vol.ratio > 1.0;
+
+    // LONG условия: импульс вверх + объём + тренд HTF не запрещает
+    const canLong = impulseUp && hasVolume && htfTrend !== -1;
+    // SHORT условия: импульс вниз + объём + тренд HTF не запрещает
+    const canShort = impulseDown && hasVolume && htfTrend !== 1;
+
+    if (canLong) {
+      filter3.passed = true;
+      filter3.status = 'LONG ПОДТВЕРЖДЁН';
+      filter3.detail = `Импульс ↑ · Объём ×${vol.ratio.toFixed(2)}`;
+      filter3.side = 'LONG';
+    } else if (canShort) {
+      filter3.passed = true;
+      filter3.status = 'SHORT ПОДТВЕРЖДЁН';
+      filter3.detail = `Импульс ↓ · Объём ×${vol.ratio.toFixed(2)}`;
+      filter3.side = 'SHORT';
     } else {
-      factors.push({ tag:'VOL', text:`×${vol.ratio.toFixed(2)} — норма`, color:'muted', pts:0 });
-    }
-  }
-
-  // Patterns (±1 за сильный, максимум ±2)
-  let patScore = 0;
-  for (const p of patterns) {
-    if (p.bull === true  && patScore < 2)  { patScore += 1; score += 1; }
-    if (p.bull === false && patScore > -2) { patScore -= 1; score -= 1; }
-  }
-  if (patterns.length > 0) {
-    const display  = patterns.slice(0, 2);
-    const col = patScore > 0 ? 'green' : patScore < 0 ? 'red' : 'muted';
-    factors.push({
-      tag:'PAT',
-      text: display.map(p=>p.name).join(' · ') + (patterns.length > 2 ? ` +${patterns.length-2}` : ''),
-      color: col,
-      pts: patScore
-    });
-  }
-
-  // HTF‑score как бонус/штраф (±2) — БЕЗ фильтрации
-  if (htfData) {
-    if (htfScore !== 0) {
-      score += htfScore;
-      const col = htfScore > 0 ? 'green' : htfScore < 0 ? 'red' : 'muted';
-      factors.push({ tag:'HTF', text: htfText, color: col, pts: htfScore });
-    }
-  }
-
-  // Описание Fibo (pts=0)
-  if (fib && fibRatio !== null) {
-    const posPct = (fibRatio * 100).toFixed(1);
-    const inZone = fibZoneOk;
-    factors.push({
-      tag: 'FIBO',
-      text: inZone
-        ? `Цена в золотой зоне 0.5–0.618 (${posPct}%)`
-        : `Цена вне зоны интереса 0.5–0.618 (${posPct}%)`,
-      color: inZone ? 'green' : 'yellow',
-      pts: 0
-    });
-  }
-
-  // Описание волатильности (pts=0)
-  if (atr !== null && atrAvg100 !== null && price) {
-    const atrPctCur = (atr / price * 100);
-    const atrPctAvg = (atrAvg100 / price * 100);
-    if (!isNaN(atrPctCur) && !isNaN(atrPctAvg)) {
-      if (volatilityOK) {
-        factors.push({
-          tag: 'VOLAT',
-          text: `ATR ${atrPctCur.toFixed(2)}% ≥ средн. ${atrPctAvg.toFixed(2)}% · рынок активен`,
-          color: 'green',
-          pts: 0
-        });
-      } else {
-        factors.push({
-          tag: 'VOLAT',
-          text: `ATR ${atrPctCur.toFixed(2)}% < средн. ${atrPctAvg.toFixed(2)}% · рынок спит`,
-          color: 'yellow',
-          pts: 0
-        });
+      if (!impulseUp && !impulseDown) {
+        filter3.detail = 'Нет импульса — свеча без направления';
+      } else if (!hasVolume) {
+        filter3.detail = `Объём ×${vol.ratio ? vol.ratio.toFixed(2) : '0'} ниже среднего`;
+      } else if (htfTrend === 1 && impulseDown) {
+        filter3.detail = 'Импульс ↓ заблокирован бычьим трендом HTF';
+      } else if (htfTrend === -1 && impulseUp) {
+        filter3.detail = 'Импульс ↑ заблокирован медвежьим трендом HTF';
       }
     }
   }
 
-  // ── 6. Базовое направление по score + гистерезис ──
-  const SCOREMAX = 7;
-  const hysteresisState = applyHysteresis(score);
-  let signal = 'НЕЙТРАЛЬНО';
-  let signalClass = 'neutral';
-  let baseDir = null; // 'buy' or 'sell'
-
-  if (hysteresisState === 'buy') {
-    baseDir = 'buy';
-    signal = score >= THRESHOLD_STRONG_BUY ? 'STRONG BUY' : 'BUY';
-    signalClass = 'buy';
-  } else if (hysteresisState === 'sell') {
-    baseDir = 'sell';
-    signal = score <= -THRESHOLD_STRONG_BUY ? 'STRONG SELL' : 'SELL';
-    signalClass = 'sell';
-  } else {
-    if (score >= 1)      signal = 'WAIT BUY';
-    else if (score <= -1)signal = 'WAIT SELL';
-    signalClass = 'neutral';
+  // ═══ ИТОГОВЫЙ SETUP ═══
+  let setup = 'WAIT';
+  let side = null;
+  if (filter1.passed && filter2.passed && filter3.passed) {
+    setup = 'TRIGGERED';
+    side = filter3.side;
   }
 
-  // ── 7. ФИЛЬТРЫ: HTF‑тренд → волатильность → Fibo → жёсткий порог Score ──
-
-  // HTF‑фильтр: запрет против тренда старшего ТФ
-  if (baseDir && htfData && htfTrend !== 0) {
-    if (baseDir === 'buy' && htfTrend === -1) {
-      htfFilterActive = true;
-      htfFilterNote = `HTF ${htfData.tf} медвежий — BUY заблокирован, ждём откат`;
-      signal = 'WAIT BUY · HTF';
-      signalClass = 'neutral';
-      factors.push({ tag:'FILTER', text: htfFilterNote, color:'yellow', pts:0 });
-      baseDir = null;
-    } else if (baseDir === 'sell' && htfTrend === 1) {
-      htfFilterActive = true;
-      htfFilterNote = `HTF ${htfData.tf} бычий — SELL заблокирован, ждём откат`;
-      signal = 'WAIT SELL · HTF';
-      signalClass = 'neutral';
-      factors.push({ tag:'FILTER', text: htfFilterNote, color:'yellow', pts:0 });
-      baseDir = null;
-    }
-  }
-
-  // Фильтр по волатильности (ATR)
-  if (baseDir && !volatilityOK && atr !== null && atrAvg100 !== null) {
-    if (baseDir === 'buy') {
-      signal = 'WAIT BUY · NO VOLATILITY';
-    } else {
-      signal = 'WAIT SELL · NO VOLATILITY';
-    }
-    signalClass = 'neutral';
-    factors.push({ tag:'FILTER', text:'ATR ниже среднего за 100 свечей — рынок спит, сделки запрещены', color:'yellow', pts:0 });
-    baseDir = null;
-  }
-
-  // Фильтр и подтверждение по Fibo:
-  // 1) сначала цена должна КОСНУТЬСЯ зоны 0.5–0.618 (fibZonePrev === true),
-  // 2) затем следующая свеча должна закрыться с ИМПУЛЬСОМ в сторону сделки,
-  //    причём:
-  //      • для LONG — закрытие ВЫШЕ уровня 0.5
-  //      • для SHORT — закрытие НИЖЕ уровня 0.5
-  //    и тело свечи > средней величины тела за последние 5 свечей.
-  if (baseDir && fib && fibRatio !== null && candles.length >= 6) {
-    const lastIdx   = candles.length - 1;
-    const cur       = candles[lastIdx];
-    const prev      = candles[lastIdx - 1];
-
-    // Средний размер тела за последние 5 закрытых свечей (без текущей)
-    const bodyWindow = candles.slice(lastIdx - 5, lastIdx);
-    const avgBody = bodyWindow.reduce((sum, c) => sum + Math.abs(c.close - c.open), 0) / bodyWindow.length;
-    const curBody = Math.abs(cur.close - cur.open);
-
-    const isImpulseUp   = cur.close > cur.open && curBody > avgBody;
-    const isImpulseDown = cur.close < cur.open && curBody > avgBody;
-
-    const above0500 = cur.close > fib.level0500;
-    const below0500 = cur.close < fib.level0500;
-
-    let confirmed = false;
-
-    if (baseDir === 'buy') {
-      // LONG: предыдущая свеча коснулась зоны 0.5–0.618, текущая — импульсно выше 0.5 в бычьем направлении
-      if (fibZonePrev && above0500 && isImpulseUp) {
-        confirmed = true;
-      }
-    } else if (baseDir === 'sell') {
-      // SHORT: предыдущая свеча коснулась зоны 0.5–0.618, текущая — импульсно ниже 0.5 в медвежьем направлении
-      if (fibZonePrev && below0500 && isImpulseDown) {
-        confirmed = true;
-      }
-    }
-
-    if (!confirmed) {
-      if (baseDir === 'buy') {
-        signal = 'WAIT BUY · FIBO CONFIRM';
-      } else if (baseDir === 'sell') {
-        signal = 'WAIT SELL · FIBO CONFIRM';
-      }
-      signalClass = 'neutral';
-      factors.push({
-        tag: 'CONFIRM',
-        text: 'Ожидание подтверждения от Fibo: сначала касание зоны 0.5–0.618, затем импульсная свеча в сторону сделки (тело > средней за 5 свечей)',
-        color: 'yellow',
-        pts: 0
-      });
-      baseDir = null;
-    }
-  }
-
-  // Жёсткий порог Score (снайперский)
-  if (baseDir === 'buy' && score < 5) {
-    signal = 'WAIT BUY · SCORE<5';
-    signalClass = 'neutral';
-    factors.push({ tag:'FILTER', text:'Score < 5 — ждём идеального совпадения факторов', color:'yellow', pts:0 });
-    baseDir = null;
-  } else if (baseDir === 'sell' && score > -5) {
-    signal = 'WAIT SELL · SCORE>-5';
-    signalClass = 'neutral';
-    factors.push({ tag:'FILTER', text:'Score > -5 — ждём идеального совпадения факторов', color:'yellow', pts:0 });
-    baseDir = null;
-  }
-
-  // ── 8. SL/TP‑план на основе итогового score и ATR ──
-  _lastAtrForPlan = atr;
-  const sltp = getTradePlan(score, sr, price, price);
+  // SL/TP план
+  const sltp = side ? getTradePlan(side, sr, price, price) : null;
 
   return {
-    score,
-    SCOREMAX,
-    signal,
-    signalClass,
-    rsi,
-    macd,
-    ema,
-    atr,
-    atrAvg100,
-    volatilityOK,
-    fib,
+    setup,
+    side,
+    price,
+    filters: { filter1, filter2, filter3 },
+    // Данные для UI
+    rsi, macd, ema, vol, fib, sr, patterns, atr,
     fibRatio,
-    fibZoneOk,
-    sr,
-    vol,
-    patterns,
-    factors,
-    sltp,
-    htfScore,
-    htfData,
     htfTrend,
-    htfFilterActive,
-    htfFilterNote
+    htfLabel,
+    htfData,
+    sltp
   };
 }
 
-// ── TRIGGER-AWARE ОБЁРТКА: calcCompositeSignal ──
-// Делает сигналы событийными (импульсные триггеры + cooldown)
+// ── calcCompositeSignal: обёртка над getTradeSetup ──
 function calcCompositeSignal(candles, htfData, triggerKey) {
-  const base = getCompositeScore(candles, htfData);
-  if (!base) return null;
+  const setup = getTradeSetup(candles, htfData);
+  if (!setup) return null;
 
-  const now   = Date.now();
-  const key   = triggerKey || 'DEFAULT';
-  const price = candles[candles.length - 1].close;
+  const key = triggerKey || 'DEFAULT';
 
-  let state = triggerStateMap[key] || {
-    previousScore: null,
-    lastTriggeredTime: null,
-    status: 'WAITING',          // 'WAITING' | 'TRIGGERED'
-    entryPrice: null,
-    atrAtTrigger: null,
-    sltpAtTrigger: null,
-  };
+  // UI сигнал
+  let signal = 'WAITING FOR SETUP';
+  let signalClass = 'neutral';
+  let triggerStatusRaw = 'WAITING';
 
-  const prevScore = state.previousScore;
-  const curScore  = base.score;
-  let   lastTriggeredTime = state.lastTriggeredTime;
-  let   status            = state.status;
-  let   entryPrice        = state.entryPrice;
-  let   atrAtTrigger      = state.atrAtTrigger;
-  let   sltpAtTrigger     = state.sltpAtTrigger;
-
-  // Cooldown: не перетриггерим один и тот же инструмент чаще, чем раз в 30 минут
-  const inCooldown = lastTriggeredTime && (now - lastTriggeredTime < TRIGGER_COOLDOWN_MS);
-
-  // Направление по целевым порогам
-  let dir = null; // 'buy' | 'sell'
-  if (curScore >= TRIGGER_BUY_MIN_SCORE) dir = 'buy';
-  else if (curScore <= TRIGGER_SELL_MIN_SCORE) dir = 'sell';
-
-  // Резкий импульс по score
-  let triggeredNow = false;
-  if (!inCooldown && dir && prevScore !== null && prevScore !== undefined) {
-    if (dir === 'buy') {
-      // Для BUY: текущий score стал как минимум на 3 пункта ВЫШЕ предыдущего
-      if (curScore - prevScore >= TRIGGER_DELTA_SCORE && curScore >= TRIGGER_BUY_MIN_SCORE) {
-        triggeredNow = true;
-      }
-    } else if (dir === 'sell') {
-      // Для SELL: текущий score ушёл как минимум на 3 пункта НИЖЕ предыдущего
-      if (prevScore - curScore >= TRIGGER_DELTA_SCORE && curScore <= TRIGGER_SELL_MIN_SCORE) {
-        triggeredNow = true;
-      }
-    }
+  if (setup.setup === 'TRIGGERED' && setup.side === 'LONG') {
+    signal = '⚡ TRIGGERED: ENTRY ZONE (LONG)';
+    signalClass = 'buy';
+    triggerStatusRaw = 'TRIGGERED';
+  } else if (setup.setup === 'TRIGGERED' && setup.side === 'SHORT') {
+    signal = '⚡ TRIGGERED: ENTRY ZONE (SHORT)';
+    signalClass = 'sell';
+    triggerStatusRaw = 'TRIGGERED';
   }
 
-  // Если триггер сработал — фиксируем "зону входа"
-  if (triggeredNow) {
-    status            = 'TRIGGERED';
-    lastTriggeredTime = now;
-    entryPrice        = price;
-    atrAtTrigger      = base.atr || null;
-    sltpAtTrigger     = base.sltp || null;
-  }
-
-  // Фильтр "остывания зоны": если цена ушла дальше, чем ATR от entryPrice — зона сбрасывается
-  if (status === 'TRIGGERED' && entryPrice != null && atrAtTrigger != null) {
-    const upper = entryPrice + atrAtTrigger;
-    const lower = entryPrice - atrAtTrigger;
-    if (price > upper || price < lower) {
-      status        = 'WAITING';
-      entryPrice    = null;
-      atrAtTrigger  = null;
-      sltpAtTrigger = null;
-    }
-  }
-
-  // Обновляем хранилище состояния для ключа
-  triggerStateMap[key] = {
-    previousScore: curScore,
-    lastTriggeredTime,
-    status,
-    entryPrice,
-    atrAtTrigger,
-    sltpAtTrigger,
-  };
-
-  // UI‑статусы
-  let uiSignalText  = 'WAITING FOR SETUP';
-  let uiSignalClass = 'neutral';
-  if (status === 'TRIGGERED' && dir === 'buy') {
-    uiSignalText  = '⚡ TRIGGERED: ENTRY ZONE (LONG)';
-    uiSignalClass = 'buy';
-  } else if (status === 'TRIGGERED' && dir === 'sell') {
-    uiSignalText  = '⚡ TRIGGERED: ENTRY ZONE (SHORT)';
-    uiSignalClass = 'sell';
-  }
-
-  // ── TELEGRAM ALERT ──
-  if (status === 'TRIGGERED' && dir && canSendAlert(key)) {
+  // TELEGRAM ALERT
+  if (triggerStatusRaw === 'TRIGGERED' && canSendAlert(key)) {
     const alertSymbol = key.split('|')[0] || key;
-    const alertPrice = fmt(price);
-    const alertScore = `${base.score}/${base.SCOREMAX}`;
-    const alertSL = base.sltp && base.sltp.sl ? fmt(base.sltp.sl) : '—';
-    const alertTPs = base.sltp && base.sltp.tps ? base.sltp.tps.map(t => fmt(t)).join(', ') : '—';
-    const alertMsg = `⚡️ СИГНАЛ: ${alertSymbol}\n💰 Цена: ${alertPrice}\n📊 Сила: ${alertScore}\n📉 СЛ/ТП: ${alertSL} / ${alertTPs}`;
+    const alertPrice = fmt(setup.price);
+    const alertSL = setup.sltp && setup.sltp.sl ? fmt(setup.sltp.sl) : '—';
+    const alertTPs = setup.sltp && setup.sltp.tps ? setup.sltp.tps.map(t => fmt(t)).join(', ') : '—';
+    const alertMsg = `⚡️ СИГНАЛ: ${alertSymbol}\n💰 Цена: ${alertPrice}\n📉 СЛ/ТП: ${alertSL} / ${alertTPs}`;
     sendTelegramAlert(alertMsg);
   }
 
-  // В режиме Охоты:
-  // - счёт (score) и факторы остаются как есть
-  // - НО "сигнал" для UI и радаров теперь событийный, а не статичный
-  const sig = {
-    ...base,
-    signal: uiSignalText,
-    signalClass: uiSignalClass,
-    triggerStatusRaw: status,
+  return {
+    signal,
+    signalClass,
+    triggerStatusRaw,
     triggerKey: key,
-    triggerInCooldown: !!inCooldown,
-    triggerEntryPrice: entryPrice,
-    triggerAtr: atrAtTrigger,
-    triggerSLTP: sltpAtTrigger,
+    // Данные для UI
+    price: setup.price,
+    rsi: setup.rsi,
+    macd: setup.macd,
+    ema: setup.ema,
+    vol: setup.vol,
+    fib: setup.fib,
+    fibRatio: setup.fibRatio,
+    sr: setup.sr,
+    patterns: setup.patterns,
+    atr: setup.atr,
+    htfTrend: setup.htfTrend,
+    htfLabel: setup.htfLabel,
+    htfData: setup.htfData,
+    sltp: setup.sltp,
+    filters: setup.filters,
+    setup: setup.setup,
+    side: setup.side
   };
+}
 
-  return sig;
+// ── getCompositeScore (калькуляция рейтинга / score) ──
+function getCompositeScore(candles, htfData) {
+  const setup = getTradeSetup(candles, htfData);
+  if (!setup) return null;
+
+  // Итоговая оценка: 7 баллов (2+2+3) на основе прохода фильтров.
+  // Знак отражает направление: LONG положительный, SHORT отрицательный.
+  let score = 0;
+  if (setup.filters.filter1.passed) score += 2; // HTF тренд
+  if (setup.filters.filter2.passed) score += 2; // зона интереса
+  if (setup.filters.filter3.passed) score += 3; // триггер / импульс
+  if (setup.side === 'SHORT') score = -score;
+
+  return {
+    score,
+    side: setup.side,
+    setup: setup.setup,
+    price: setup.price,
+    rsi: setup.rsi,
+    ema: setup.ema,
+    vol: setup.vol,
+    filters: setup.filters
+  };
 }
 
 // ═══════════════════════════════════════════════
@@ -1651,12 +1331,9 @@ function renderAnalysisPanel(sig, candles) {
   const price   = candles[candles.length-1].close;
   const dotColor= sig.signalClass==='buy' ? '#0ecb81' : sig.signalClass==='sell' ? '#f6465d' : '#848e9c';
   const isTriggered = sig.triggerStatusRaw === 'TRIGGERED';
-  const isWaitingSetup = !isTriggered;
   const signalDisplayColor = isTriggered
     ? (sig.signalClass==='buy' ? 'var(--green)' : sig.signalClass==='sell' ? 'var(--red)' : 'var(--muted)')
     : 'var(--muted)';
-  const scoreColor = sig.score > 0 ? 'var(--green)' : sig.score < 0 ? 'var(--red)' : 'var(--muted)';
-  const scorePct   = ((sig.score + sig.SCOREMAX) / (sig.SCOREMAX * 2) * 100).toFixed(1);
 
   // RSI
   const rsiStr   = sig.rsi !== null ? sig.rsi.toFixed(1) : '—';
@@ -1682,11 +1359,7 @@ function renderAnalysisPanel(sig, candles) {
   const volColor = sig.vol.spike ? (sig.vol.bullish ? 'var(--green)' : 'var(--red)') : 'var(--muted)';
   const volLabel = sig.vol.spike ? (sig.vol.bullish ? 'Бычий' : 'Медвежий') : 'Норма';
 
-  // HTF
-  const htfLabel = sig.htfData ? `${sig.htfData.tf} · ${sig.htfData.ema ? sig.htfData.ema.label : '—'}` : '—';
-  const htfColor = sig.htfScore > 0 ? 'var(--green)' : sig.htfScore < 0 ? 'var(--red)' : 'var(--muted)';
-
-  // Fibo levels for display (0.5–0.618 zone)
+  // Fibo levels for display
   let fibLabelMain = '—';
   let fibLabelSub  = 'нет данных';
   let fibColor     = 'var(--muted)';
@@ -1696,39 +1369,25 @@ function renderAnalysisPanel(sig, candles) {
     fibLabelMain = `${fmt(l50)} – ${fmt(l618)}`;
     if (sig.fibRatio != null) {
       const posPct = (sig.fibRatio * 100).toFixed(1) + '%';
-      if (sig.fibZoneOk) {
+      if (sig.fibRatio >= 0.5 && sig.fibRatio <= 0.618) {
         fibLabelSub = `Цена в зоне (${posPct})`;
         fibColor = 'var(--green)';
       } else {
         fibLabelSub = `Вне зоны (${posPct})`;
         fibColor = 'var(--yellow)';
       }
-    } else {
-      fibLabelSub = 'Диапазон определён';
     }
   }
 
-  // ATR current vs average for 100 candles
+  // ATR
   const atrValStr = sig.atr ? fmt(sig.atr) : '—';
-  let atrSubStr = '—';
-  if (sig.atr && sig.atrAvg100) {
-    const atrPctCur = (sig.atr / price * 100).toFixed(2);
-    const atrPctAvg = (sig.atrAvg100 / price * 100).toFixed(2);
-    const volWord   = sig.volatilityOK ? 'волатилен' : 'спокоен';
-    atrSubStr = `${atrPctCur}% vs ${atrPctAvg}% · рынок ${volWord}`;
-  } else if (sig.atr) {
-    atrSubStr = (sig.atr / price * 100).toFixed(2) + '% волат.';
-  }
+  const atrSubStr = sig.atr ? (sig.atr / price * 100).toFixed(2) + '% волат.' : '—';
 
-  // Управление FAST-кнопками в калькуляторе:
-  // только когда TRIGGER активен и RR-план валиден
+  // Управление FAST-кнопками
   try {
     const fastBox = document.getElementById('fast-buttons');
     if (fastBox) {
-      const ok = sig.triggerStatusRaw === 'TRIGGERED'
-        && sig.sltp
-        && sig.sltp.isValidRR !== false;
-      fastBox.style.display = ok ? 'grid' : 'none';
+      fastBox.style.display = isTriggered ? 'grid' : 'none';
     }
   } catch {}
 
@@ -1742,21 +1401,33 @@ function renderAnalysisPanel(sig, candles) {
       }).join('')
     : '<span style="font-size:9px;color:var(--muted);">Нет паттернов</span>';
 
-  // Factors
-  const factorsHTML = sig.factors.map(f => {
-    const c = f.color==='green'?'var(--green)':f.color==='red'?'var(--red)':'var(--border)';
-    const s = f.pts>0?`+${f.pts}`:f.pts<0?`${f.pts}`:'±0';
-    return `<div class="ap-factor-row">
-      <span class="ap-factor-tag">${f.tag}</span>
-      <span class="ap-factor-text" style="color:${c};">${f.text}</span>
-      <span class="ap-factor-pts" style="color:${c};">${s}</span>
-    </div>`;
-  }).join('');
+  // ═══ ИЕРАРХИЧЕСКИЕ ФИЛЬТРЫ ═══
+  const f1 = sig.filters.filter1;
+  const f2 = sig.filters.filter2;
+  const f3 = sig.filters.filter3;
 
-  // SL/TP — динамический рендер по массиву ТП
+  const filterStatusColor = (passed) => passed ? 'var(--green)' : 'var(--yellow)';
+  const filterIcon = (passed) => passed ? '✅' : '⏳';
+
+  const filtersHTML = `
+    <div class="ap-factors">
+      <div class="ap-factor-row">
+        <span class="ap-factor-tag">ШАГ 1</span>
+        <span class="ap-factor-text" style="color:${filterStatusColor(f1.passed)};">${filterIcon(f1.passed)} ${f1.name}: ${f1.detail}</span>
+      </div>
+      <div class="ap-factor-row">
+        <span class="ap-factor-tag">ШАГ 2</span>
+        <span class="ap-factor-text" style="color:${filterStatusColor(f2.passed)};">${filterIcon(f2.passed)} ${f2.name}: ${f2.detail}</span>
+      </div>
+      <div class="ap-factor-row">
+        <span class="ap-factor-tag">ШАГ 3</span>
+        <span class="ap-factor-text" style="color:${filterStatusColor(f3.passed)};">${filterIcon(f3.passed)} ${f3.name}: ${f3.detail}</span>
+      </div>
+    </div>`;
+
+  // SL/TP
   let sltpHTML = '';
-  // SL/TP‑план показываем только в режиме TRIGGERED
-  const st = sig.triggerStatusRaw === 'TRIGGERED' ? sig.sltp : null;
+  const st = isTriggered ? sig.sltp : null;
   if (st && Array.isArray(st.tps) && st.tps.length > 0) {
     const basePrice = price;
     const firstTp   = st.tps[0];
@@ -1771,12 +1442,10 @@ function renderAnalysisPanel(sig, candles) {
       const rrColor = !isNaN(rrNum)
         ? (rrNum >= 2 ? 'var(--green)' : rrNum >= 1 ? 'var(--yellow)' : 'var(--red)')
         : 'var(--muted)';
-
       const label       = `ТЕЙК-ПРОФИТ ${idx + 1}`;
       const cardBg      = idx === 0 ? 'rgba(14,203,129,.07)' : 'rgba(108,127,255,.07)';
       const cardBorder  = idx === 0 ? 'rgba(14,203,129,.25)' : 'rgba(108,127,255,.25)';
       const priceColor  = idx === 0 ? 'var(--green)' : 'var(--accent)';
-
       return `
         <div class="sltp-card" style="background:${cardBg};border:1px solid ${cardBorder};">
           <div class="sltp-card-label" style="color:${priceColor};">${label}</div>
@@ -1786,19 +1455,12 @@ function renderAnalysisPanel(sig, candles) {
         </div>`;
     }).join('');
 
-    const rrBanner = st.isValidRR === false
-      ? `<div style="margin-top:4px;margin-bottom:4px;padding:4px 6px;border-radius:4px;background:rgba(246,70,93,0.08);border:1px solid rgba(246,70,93,0.4);font-size:9px;color:var(--red);">
-           ⚠️ СИГНАЛ ОТКЛОНЕН: RR &lt; 1:2 (потенциал мал)
-         </div>`
-      : '';
-
     sltpHTML = `
     <div class="ap-sltp">
       <div class="ap-sltp-header">
         <span>ТОРГОВЫЙ ПЛАН · <span style="color:${dirC};font-weight:700;">${dir}</span></span>
         <span>вход ~${fmt(price)}</span>
       </div>
-      ${rrBanner}
       <div class="ap-sltp-grid" style="grid-template-columns:repeat(${1 + st.tps.length}, 1fr);">
         <div class="sltp-card" style="background:rgba(246,70,93,.07);border:1px solid rgba(246,70,93,.25);">
           <div class="sltp-card-label" style="color:var(--red);">СТОП-ЛОСС</div>
@@ -1815,24 +1477,39 @@ function renderAnalysisPanel(sig, candles) {
   panel.innerHTML = `
     <div class="ap-top">
       <div class="ap-signal-box">
-        <div class="ap-signal-label">ОХОТА · TRIGGER LOGIC</div>
+        <div class="ap-signal-label">ИЕРАРХИЧЕСКАЯ ФИЛЬТРАЦИЯ</div>
         <div class="ap-signal-main">
           <div class="ap-signal-dot" style="background:${dotColor};box-shadow:0 0 8px ${dotColor};"></div>
           <span style="color:${signalDisplayColor};">${sig.signal}</span>
         </div>
-        <div class="ap-signal-sub">Счёт: ${sig.score>0?'+':''}${sig.score} / ±${sig.SCOREMAX}</div>
+        <div class="ap-signal-sub">${sig.side ? sig.side : 'Ожидание сетапа'}</div>
       </div>
       <div class="ap-htf-box">
-        <div class="ap-signal-label">СТАРШИЙ ТФ${sig.htfFilterActive?' 🚫':''}</div>
-        <div style="font-size:11px;font-weight:600;color:${htfColor};margin-top:3px;">${htfLabel}</div>
-        <div class="ap-signal-sub" style="margin-top:2px;${sig.htfFilterActive?'color:var(--yellow);':''}">${sig.htfFilterActive?'ФИЛЬТР ТРЕНДА':sig.htfData&&sig.htfData.rsi?'RSI '+sig.htfData.rsi.toFixed(1):'—'}</div>
+        <div class="ap-signal-label">СТАРШИЙ ТФ</div>
+        <div style="font-size:11px;font-weight:600;color:${sig.htfTrend === 1 ? 'var(--green)' : sig.htfTrend === -1 ? 'var(--red)' : 'var(--muted)'};margin-top:3px;">${sig.htfLabel}</div>
+        <div class="ap-signal-sub" style="margin-top:2px;">${f1.status}</div>
       </div>
       <div class="ap-score-wrap">
-        <div class="ap-score-label">СИЛА СИГНАЛА (${sig.factors.length} факторов)</div>
-        <div class="ap-score-bar"><div class="ap-score-fill" style="width:${scorePct}%;background:${scoreColor};"></div></div>
-        <div style="display:flex;gap:8px;margin-top:4px;flex-wrap:wrap;">
-          ${sig.factors.map(f=>{const c=f.color==='green'?'var(--green)':f.color==='red'?'var(--red)':'var(--border)';return`<span style="font-size:8px;color:${c};letter-spacing:1px;">${f.tag}${f.pts>0?'↑':f.pts<0?'↓':'·'}</span>`;}).join('')}
+        <div class="ap-score-label">СТАТУС ФИЛЬТРОВ</div>
+        <div style="display:flex;gap:12px;margin-top:6px;">
+          <div style="text-align:center;">
+            <div style="font-size:18px;">${filterIcon(f1.passed)}</div>
+            <div style="font-size:8px;color:var(--muted);letter-spacing:1px;">ТРЕНД</div>
+          </div>
+          <div style="text-align:center;">
+            <div style="font-size:18px;">${filterIcon(f2.passed)}</div>
+            <div style="font-size:8px;color:var(--muted);letter-spacing:1px;">ЗОНА</div>
+          </div>
+          <div style="text-align:center;">
+            <div style="font-size:18px;">${filterIcon(f3.passed)}</div>
+            <div style="font-size:8px;color:var(--muted);letter-spacing:1px;">ТРИГГЕР</div>
+          </div>
         </div>
+      </div>
+      <div style="flex:0 0 140px;padding:8px 12px;display:flex;flex-direction:column;justify-content:center;gap:3px;border-left:1px solid var(--border);">
+        <div class="ap-signal-label">SETUP STATUS</div>
+        <div style="font-size:14px;font-weight:700;letter-spacing:1px;color:${isTriggered ? 'var(--green)' : 'var(--yellow)'};">${sig.setup}</div>
+        <div class="ap-signal-sub" style="font-size:8px;">${isTriggered ? 'Все фильтры пройдены' : 'Ожидание условий'}</div>
       </div>
     </div>
     <div class="ap-metrics">
@@ -1876,7 +1553,7 @@ function renderAnalysisPanel(sig, candles) {
       <span class="ap-pat-label">ПАТТЕРНЫ</span>${patsHTML}
       <span style="margin-left:auto;font-size:9px;color:var(--muted);">VOL <span style="color:${volColor};">${volStr} ${volLabel}</span></span>
     </div>
-    <div class="ap-factors">${factorsHTML}</div>
+    ${filtersHTML}
     ${sltpHTML}
   `;
 }
@@ -1980,32 +1657,57 @@ function checkTradeConditions(currentPrice) {
   for (let i = 0; i < activeTrade.takeProfits.length; i++) {
     if (activeTrade.hitTPs && activeTrade.hitTPs.includes(i)) continue;
     const tp = activeTrade.takeProfits[i];
-    if (activeTrade.side === 'LONG'  && currentPrice >= tp) {
-      // TP hit logic with breakeven shift
-      if (i === 0 && !activeTrade.breakevenHit) {
+
+    if (activeTrade.side === 'LONG' && currentPrice >= tp) {
+      if (i === 0 && !activeTrade.partialClosed) {
+        // Partial close 50% on first TP + move SL to breakeven
+        const closedSize = activeTrade.positionSize / 2;
+        const gainPct = ((tp - activeTrade.entryPrice) / activeTrade.entryPrice);
+        const realized = closedSize * gainPct;
+
+        activeTrade.realizedPnL = (activeTrade.realizedPnL || 0) + realized;
+        activeTrade.positionSize = closedSize;
+        activeTrade.partialClosed = true;
         activeTrade.stopLoss = activeTrade.entryPrice;
         activeTrade.breakevenHit = true;
-        if (!activeTrade.hitTPs) activeTrade.hitTPs = [];
+        activeTrade.hitTPs = activeTrade.hitTPs || [];
         activeTrade.hitTPs.push(i);
-        drawTradeLines(activeTrade);
         persistActiveTrade(activeTrade);
-        showToast('🛡️ Стоп перенесен в БУ');
-        continue;
+
+        drawTradeLines(activeTrade);
+        if (priceLines.entry) priceLines.entry.applyOptions({ title: 'ENTRY (50% закрыто)' });
+        showToast('🛡️ 50% закрыто, Стоп в БУ', 'win', 5000);
+        return;
       }
-      closeTrade('tp', currentPrice); return;
+
+      // Closing remaining position on second TP or after partial close
+      closeTrade('tp', currentPrice);
+      return;
     }
+
     if (activeTrade.side === 'SHORT' && currentPrice <= tp) {
-      if (i === 0 && !activeTrade.breakevenHit) {
+      if (i === 0 && !activeTrade.partialClosed) {
+        const closedSize = activeTrade.positionSize / 2;
+        const gainPct = ((activeTrade.entryPrice - tp) / activeTrade.entryPrice);
+        const realized = closedSize * gainPct;
+
+        activeTrade.realizedPnL = (activeTrade.realizedPnL || 0) + realized;
+        activeTrade.positionSize = closedSize;
+        activeTrade.partialClosed = true;
         activeTrade.stopLoss = activeTrade.entryPrice;
         activeTrade.breakevenHit = true;
-        if (!activeTrade.hitTPs) activeTrade.hitTPs = [];
+        activeTrade.hitTPs = activeTrade.hitTPs || [];
         activeTrade.hitTPs.push(i);
-        drawTradeLines(activeTrade);
         persistActiveTrade(activeTrade);
-        showToast('🛡️ Стоп перенесен в БУ');
-        continue;
+
+        drawTradeLines(activeTrade);
+        if (priceLines.entry) priceLines.entry.applyOptions({ title: 'ENTRY (50% закрыто)' });
+        showToast('🛡️ 50% закрыто, Стоп в БУ', 'win', 5000);
+        return;
       }
-      closeTrade('tp', currentPrice); return;
+
+      closeTrade('tp', currentPrice);
+      return;
     }
   }
 }
@@ -2126,90 +1828,132 @@ async function loadChart() {
 // RADAR  — зеркало основного анализатора
 // ═══════════════════════════════════════════════
 async function loadRadar() {
+  if (radarRunning) return;
+  radarRunning = true;
+
   const dot = document.getElementById('radar-dot');
   const status = document.getElementById('radar-status');
   const tbody  = document.getElementById('radar-body');
   dot.classList.add('loading');
   status.textContent = 'Сканирование...';
 
-  const results = [];
-  for (const sym of RADAR_COINS) {
-    try {
-      // Небольшая пауза, чтобы не упереться в лимиты Binance
-      await new Promise(r => setTimeout(r, 300));
+  const scanTfs = ['5m', '1h'];
+  const allResults = [];
 
-      // История по рабочему ТФ (как на графике)
-      const raw = await fetchKlines(sym, radarTf, 250);
-      const candles = raw.map(k => ({
-        open: parseFloat(k[1]),
-        high: parseFloat(k[2]),
-        low:  parseFloat(k[3]),
-        close:parseFloat(k[4]),
-        volume:parseFloat(k[5]),
-      }));
+  try {
+    for (const sym of RADAR_COINS) {
+      const perTfResults = [];
 
-      // HTF‑подтверждение — тот же алгоритм, что и в loadChart
-      let htfData = null;
-      try {
-        await new Promise(r => setTimeout(r, 300));
-        htfData = await fetchHTFConfirmation(sym, radarTf);
-      } catch { htfData = null; }
+      for (const tf of scanTfs) {
+        try {
+          const raw = await fetchKlines(sym, tf, 250);
+          const candles = raw.map(k => ({
+            open:  parseFloat(k[1]),
+            high:  parseFloat(k[2]),
+            low:   parseFloat(k[3]),
+            close: parseFloat(k[4]),
+            volume:parseFloat(k[5]),
+          }));
 
-      const sig = calcCompositeSignal(candles, htfData, `${sym}|${radarTf}`);
+          let htfData = null;
+          try {
+            await new Promise(r => setTimeout(r, 300));
+            htfData = await fetchHTFConfirmation(sym, tf);
+          } catch { htfData = null; }
 
-      // Агрессивный фильтр по RR: в радар попадают только сетапы с RR >= 1:2
-      if (sig && sig.triggerStatusRaw === 'TRIGGERED' && sig.sltp && sig.sltp.isValidRR === true) {
-        results.push({ sym, last: candles[candles.length-1].close, sig });
+          const scoreData = getCompositeScore(candles, htfData);
+          const last = candles[candles.length - 1].close;
+
+          if (scoreData && (scoreData.setup === 'TRIGGERED' || Math.abs(scoreData.score) >= 5)) {
+            const alertKey = `${sym}|${tf}`;
+            if (canSendAlert(alertKey)) {
+              const msg = `⚡️ ТРИГГЕР [${tf}]: ${sym}\n💰 Цена: ${fmt(scoreData.price)}\n📊 Score: ${scoreData.score}/7.`;
+              sendTelegramAlert(msg);
+            }
+          }
+
+          perTfResults.push({
+            sym,
+            tf,
+            last,
+            score: scoreData ? scoreData.score : null,
+            side:  scoreData ? scoreData.side : null,
+            setup: scoreData ? scoreData.setup : null,
+            rsi:   scoreData ? scoreData.rsi : null,
+            ema:   scoreData ? scoreData.ema : null,
+            vol:   scoreData ? scoreData.vol : null,
+          });
+        } catch {
+          perTfResults.push({ sym, tf, last: null, score: null, side: null, setup: null, rsi: null, ema: null, vol: null });
+        }
+
+        // Минимальная пауза между запросами по TF, чтобы не спамить API
+        await new Promise(r => setTimeout(r, 200));
       }
-    } catch {
-      results.push({ sym, last: null, sig: null });
+
+      allResults.push({ sym, perTfResults });
+
+      // Защита от 429: пауза между монетами
+      await new Promise(r => setTimeout(r, 500));
     }
+  } finally {
+    radarRunning = false;
   }
 
+  // Отображаем результаты: если есть сигнал на обоих ТФ — отображаем оба (как строку TF) и выбираем самый сильный
+  const viewTf = scanTfs.includes(radarTf) ? radarTf : scanTfs[0];
   tbody.innerHTML = '';
-  for (const { sym, last, sig } of results) {
+
+  for (const { sym, perTfResults } of allResults) {
+    const signalEntries = perTfResults.filter(r => r.score !== null && (r.setup === 'TRIGGERED' || Math.abs(r.score) >= 5));
+
+    let display = perTfResults.find(r => r.tf === viewTf) || perTfResults[0];
+    let tfLabel = display.tf || '—';
+
+    if (signalEntries.length > 0) {
+      const strongest = signalEntries.reduce((best, cur) => Math.abs(cur.score) > Math.abs(best.score) ? cur : best);
+      tfLabel = Array.from(new Set(signalEntries.map(r => r.tf))).join('/');
+      display = strongest;
+    }
+
     const coin = sym.replace('USDT','');
     let badgeClass='neutral', badgeText='HOLD';
     let rsiStr='—', rsiColor='var(--muted)';
     let emaStr='—', emaColor='var(--muted)';
     let volStr='—', volColor='var(--muted)';
 
-    if (sig) {
-      // Используем уже отфильтрованный сигнал, как на основном графике
-      const cls = sig.signalClass;
-      const txt = sig.signal || '';
-
-      if (cls === 'buy') {
+    if (display && display.score !== null) {
+      if (display.side === 'LONG') {
         badgeClass = 'buy';
-        badgeText  = txt && txt.indexOf('STRONG') !== -1 ? '⚡BUY' : 'BUY';
-      } else if (cls === 'sell') {
+        badgeText = 'BUY';
+      } else if (display.side === 'SHORT') {
         badgeClass = 'sell';
-        badgeText  = txt && txt.indexOf('STRONG') !== -1 ? '⚡SELL' : 'SELL';
-      } else if (txt && txt.startsWith('WAIT')) {
+        badgeText = 'SELL';
+      } else if (Math.abs(display.score) >= 5) {
         badgeClass = 'watch';
-        badgeText  = 'WATCH';
-      } else {
-        badgeClass = 'neutral';
-        badgeText  = 'HOLD';
+        badgeText = 'WATCH';
       }
 
-      rsiStr   = sig.rsi !== null && sig.rsi !== undefined ? sig.rsi.toFixed(1) : '—';
-      rsiColor = sig.rsi < 35 ? 'var(--green)' : sig.rsi > 65 ? 'var(--red)' : 'var(--muted)';
-
-      if (sig.ema) {
-        emaStr   = sig.ema.aboveAll ? '↑' : sig.ema.belowAll ? '↓' : '~';
-        emaColor = sig.ema.aboveAll ? 'var(--green)' : sig.ema.belowAll ? 'var(--red)' : 'var(--muted)';
+      if (display.rsi != null) {
+        rsiStr = display.rsi.toFixed(1);
+        rsiColor = display.rsi < 35 ? 'var(--green)' : display.rsi > 65 ? 'var(--red)' : 'var(--muted)';
       }
 
-      if (sig.vol && sig.vol.ratio !== null && sig.vol.ratio !== undefined) {
-        volStr   = `×${sig.vol.ratio.toFixed(1)}`;
-        volColor = sig.vol.spike ? (sig.vol.bullish ? 'var(--green)' : 'var(--red)') : 'var(--muted)';
+      if (display.ema) {
+        emaStr = display.ema.aboveAll ? '↑' : display.ema.belowAll ? '↓' : '~';
+        emaColor = display.ema.aboveAll ? 'var(--green)' : display.ema.belowAll ? 'var(--red)' : 'var(--muted)';
+      }
+
+      if (display.vol && display.vol.ratio !== null && display.vol.ratio !== undefined) {
+        volStr = `×${display.vol.ratio.toFixed(1)}`;
+        volColor = display.vol.spike ? (display.vol.bullish ? 'var(--green)' : 'var(--red)') : 'var(--muted)';
       }
     }
 
     const tr = document.createElement('tr');
     tr.innerHTML = `
-      <td><div class="coin-name">${coin}</div><div class="coin-sub">${last?fmt(last):'—'}</div></td>
+      <td><div class="coin-name">${coin}</div><div class="coin-sub">${display && display.last ? fmt(display.last) : '—'}</div></td>
+      <td>${tfLabel}</td>
       <td><span style="font-size:11px;font-weight:600;color:${rsiColor};">${rsiStr}</span></td>
       <td><span style="font-size:13px;font-weight:700;color:${emaColor};">${emaStr}</span></td>
       <td><span style="font-size:11px;font-weight:600;color:${volColor};">${volStr}</span></td>
@@ -2327,7 +2071,7 @@ function drawTradeLines(trade) {
     lineWidth: 2,
     lineStyle: 0, // solid
     axisLabelVisible: true,
-    title: `ВХОД ${trade.side}`,
+    title: `ВХОД ${trade.side}${trade.partialClosed ? ' (50% закрыто)' : ''}`,
   });
 
   priceLines.sl = candleSeries.createPriceLine({
@@ -2336,7 +2080,7 @@ function drawTradeLines(trade) {
     lineWidth: 2,
     lineStyle: 2, // dashed
     axisLabelVisible: true,
-    title: 'СТОП-ЛОСС',
+    title: `СТОП-ЛОСС${trade.partialClosed ? ' (50% остаток)' : ''}`,
   });
 
   trade.takeProfits.forEach((tp, i) => {
@@ -2470,15 +2214,21 @@ function updateActiveTradePnL(trade, currentPrice) {
   const pnlPct = trade.side === 'LONG'
     ? ((currentPrice - trade.entryPrice) / trade.entryPrice) * 100
     : ((trade.entryPrice - currentPrice) / trade.entryPrice) * 100;
-  const pnlUsd = (pnlPct / 100) * trade.positionSize;
+  const unrealizedUsd = (pnlPct / 100) * trade.positionSize;
+  const realizedUsd = trade.realizedPnL || 0;
+  const totalUsd = realizedUsd + unrealizedUsd;
 
-  const sign  = pnlUsd >= 0 ? '+' : '';
-  const cls   = pnlUsd >= 0 ? 'profit' : 'loss';
+  const totalPct = trade.initialPositionSize
+    ? (totalUsd / trade.initialPositionSize) * 100
+    : pnlPct;
+
+  const sign  = totalUsd >= 0 ? '+' : '';
+  const cls   = totalUsd >= 0 ? 'profit' : 'loss';
 
   const pnlEl  = document.getElementById('at-pnl-usd');
   const pctEl  = document.getElementById('at-pnl-pct');
-  if (pnlEl) { pnlEl.textContent = `${sign}$${Math.abs(pnlUsd).toFixed(2)}`; pnlEl.className = cls; }
-  if (pctEl) { pctEl.textContent = `${sign}${pnlPct.toFixed(2)}%`; pctEl.className = cls; }
+  if (pnlEl) { pnlEl.textContent = `${sign}$${Math.abs(totalUsd).toFixed(2)}`; pnlEl.className = cls; }
+  if (pctEl) { pctEl.textContent = `${sign}${totalPct.toFixed(2)}%`; pctEl.className = cls; }
 
   // Update time open + 24h expiry warning
   const timeEl = document.getElementById('at-time');
@@ -2564,16 +2314,19 @@ function openFastTrade(side) {
   const takeProfits = plan.tps.slice();
 
   activeTrade = {
-    id:           Date.now(),
+    id:                 Date.now(),
     symbol,
     side,
     entryPrice,
     stopLoss,
     takeProfits,
     positionSize,
-    openedAt:     Date.now(),
-    hitTPs:       [],        // which TPs were hit (indices)
-    breakevenHit: false,
+    initialPositionSize: positionSize,
+    realizedPnL:        0,
+    partialClosed:      false,
+    openedAt:           Date.now(),
+    hitTPs:             [],        // which TPs were hit (indices)
+    breakevenHit:       false,
   };
 
   persistActiveTrade(activeTrade);
@@ -2621,13 +2374,13 @@ function closeTrade(reason, closePrice) {
   const trade = activeTrade;
 
   // ── Correct PnL calculation ──
-  // pnlPct: directional % move of price
   const pnlPct = trade.side === 'LONG'
     ? ((closePrice - trade.entryPrice) / trade.entryPrice) * 100
     : ((trade.entryPrice - closePrice) / trade.entryPrice) * 100;
-  // pnlUsd: apply that % to the dollar position size (not coin count)
-  const pnlUsd = (pnlPct / 100) * trade.positionSize;
-  const isWin  = pnlUsd > 0;
+  const currentUsd = (pnlPct / 100) * trade.positionSize;
+  const realizedUsd = trade.realizedPnL || 0;
+  const totalUsd = currentUsd + realizedUsd;
+  const isWin = totalUsd > 0;
 
   // Save to journal
   const journalEntry = {
@@ -2637,13 +2390,15 @@ function closeTrade(reason, closePrice) {
     date:    new Date(trade.openedAt).toISOString().split('T')[0],
     entry:   trade.entryPrice,
     sl:      trade.stopLoss,
-    size:    trade.positionSize,
+    size:    trade.initialPositionSize || trade.positionSize,
     tps:     trade.takeProfits,
-    notes:   `Demo · закрыто: ${reason}`,
+    notes:   `Demo · закрыто: ${reason}. TP1 50%: $${(trade.partialClosed ? realizedUsd.toFixed(2) : '0.00')}. Общий PnL: $${totalUsd.toFixed(2)}`,
     slPct:   Math.abs((trade.entryPrice - trade.stopLoss) / trade.entryPrice * 100).toFixed(2),
-    risk:    Math.abs((trade.entryPrice - trade.stopLoss) / trade.entryPrice * trade.positionSize).toFixed(2),
+    risk:    Math.abs((trade.entryPrice - trade.stopLoss) / trade.entryPrice * (trade.initialPositionSize || trade.positionSize)).toFixed(2),
     status:  isWin ? 'win' : 'loss',
-    pnl:     pnlUsd.toFixed(2),
+    pnl:     totalUsd.toFixed(2),
+    pnlPct:  totalUsd / (trade.initialPositionSize || trade.positionSize) * 100,
+    tp1Realized: trade.partialClosed ? realizedUsd.toFixed(2) : '0.00',
   };
 
   try {
@@ -2653,13 +2408,16 @@ function closeTrade(reason, closePrice) {
   } catch {}
 
   // Toast result
-  const sign = pnlUsd >= 0 ? '+' : '';
+  const sign = totalUsd >= 0 ? '+' : '';
   const reasonLabels = { sl:'⛔ СТОП-ЛОСС', tp:'✅ ТЕЙК-ПРОФИТ', manual:'🖐 РУЧНОЕ ЗАКРЫТИЕ' };
+  const totalPct = trade.initialPositionSize
+    ? (totalUsd / trade.initialPositionSize) * 100
+    : (trade.positionSize > 0 ? (totalUsd / trade.positionSize) * 100 : 0);
   showToast(`
     <strong>${reasonLabels[reason] || reason}</strong><br>
     ${trade.symbol.replace('USDT','')} ${trade.side} закрыт<br>
     Цена: ${fmt(closePrice)}<br>
-    <span style="font-size:15px;font-weight:700;color:${isWin?'#0ecb81':'#f6465d'};">${sign}$${Math.abs(pnlUsd).toFixed(2)} (${sign}${pnlPct.toFixed(2)}%)</span>
+    <span style="font-size:15px;font-weight:700;color:${isWin?'#0ecb81':'#f6465d'};">${sign}$${Math.abs(totalUsd).toFixed(2)} (${sign}${totalPct.toFixed(2)}%)</span>
   `, isWin ? 'win' : 'loss', 8000);
 
   // Cleanup
@@ -2705,6 +2463,15 @@ function restoreDemoTrade() {
   // Backward‑compat: ensure breakevenHit flag exists
   if (saved && typeof saved.breakevenHit === 'undefined') {
     saved.breakevenHit = false;
+  }
+  if (saved && typeof saved.initialPositionSize === 'undefined') {
+    saved.initialPositionSize = saved.positionSize || 0;
+  }
+  if (saved && typeof saved.realizedPnL === 'undefined') {
+    saved.realizedPnL = 0;
+  }
+  if (saved && typeof saved.partialClosed === 'undefined') {
+    saved.partialClosed = false;
   }
   activeTrade = saved;
   // Restore price lines after chart is ready
